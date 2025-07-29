@@ -144,10 +144,39 @@ bool FTPClient::changeDirectory(String path) {
 bool FTPClient::fileExists(String filename) {
     Serial.printf("Checking if file exists: %s\n", filename.c_str());
     
-    controlClient.printf("SIZE %s\r\n", filename.c_str());
+    // Method 1: Try MLST (Machine Listing) command - RFC 3659
+    controlClient.printf("MLST %s\r\n", filename.c_str());
     String response = readResponse();
     
-    return response.startsWith("213");
+    if (response.startsWith("250")) {
+        Serial.printf("File exists (found via MLST): %s\n", filename.c_str());
+        return true;
+    }
+    
+    // Method 2: Try SIZE command
+    Serial.printf("MLST failed, trying SIZE command for: %s\n", filename.c_str());
+    controlClient.printf("SIZE %s\r\n", filename.c_str());
+    response = readResponse();
+    
+    if (response.startsWith("213")) {
+        Serial.printf("File exists (found via SIZE): %s\n", filename.c_str());
+        return true;
+    }
+    
+    // Method 3: If SIZE is not supported, try MDTM (Modification Time)
+    if (response.startsWith("550") && response.indexOf("not allowed") != -1) {
+        Serial.printf("SIZE not supported, trying MDTM command for: %s\n", filename.c_str());
+        controlClient.printf("MDTM %s\r\n", filename.c_str());
+        response = readResponse();
+        
+        if (response.startsWith("213")) {
+            Serial.printf("File exists (found via MDTM): %s\n", filename.c_str());
+            return true;
+        }
+    }
+    
+    Serial.printf("File does not exist: %s\n", filename.c_str());
+    return false;
 }
 
 bool FTPClient::createFile(String filename, String content) {
@@ -177,16 +206,28 @@ bool FTPClient::createFile(String filename, String content) {
         
         // Send STOR command
         controlClient.printf("STOR %s\r\n", filename.c_str());
-        readResponse();
+        String storResponse = readResponse();
+        
+        // Check if STOR command was accepted
+        if (!storResponse.startsWith("150") && !storResponse.startsWith("125")) {
+            Serial.printf("STOR command failed: %s\n", storResponse.c_str());
+            dataClient.stop();
+            return false;
+        }
         
         // Send data
         dataClient.print(content);
         dataClient.stop();
         
         // Read final response
-        readResponse();
-        Serial.println("File created successfully");
-        return true;
+        String finalResponse = readResponse();
+        if (finalResponse.startsWith("226") || finalResponse.startsWith("250")) {
+            Serial.println("File created successfully");
+            return true;
+        } else {
+            Serial.printf("File creation failed: %s\n", finalResponse.c_str());
+            return false;
+        }
     }
     
     Serial.println("Failed to create file - data connection failed");
@@ -220,20 +261,117 @@ bool FTPClient::appendToFile(String filename, String content) {
         
         // Send APPE command
         controlClient.printf("APPE %s\r\n", filename.c_str());
-        readResponse();
+        String appeResponse = readResponse();
+        
+        // Check if APPE command was accepted
+        if (!appeResponse.startsWith("150") && !appeResponse.startsWith("125")) {
+            Serial.printf("APPE command failed: %s\n", appeResponse.c_str());
+            dataClient.stop();
+            
+            // If append is not supported, inform caller
+            if (appeResponse.startsWith("451") || appeResponse.startsWith("550")) {
+                Serial.println("Append not supported by server");
+            }
+            return false;
+        }
         
         // Send data
         dataClient.print(content);
         dataClient.stop();
         
         // Read final response
-        readResponse();
-        Serial.println("Data appended successfully");
-        return true;
+        String finalResponse = readResponse();
+        if (finalResponse.startsWith("226") || finalResponse.startsWith("250")) {
+            Serial.println("Data appended successfully");
+            return true;
+        } else {
+            Serial.printf("Append operation failed: %s\n", finalResponse.c_str());
+            return false;
+        }
     }
     
     Serial.println("Failed to append to file - data connection failed");
     return false;
+}
+
+String FTPClient::downloadFile(String filename) {
+    Serial.printf("Downloading file: %s\n", filename.c_str());
+    
+    // Set binary mode
+    controlClient.printf("TYPE I\r\n");
+    readResponse();
+    
+    // Enter passive mode
+    controlClient.printf("PASV\r\n");
+    String response = readResponse();
+    
+    if (!response.startsWith("227")) {
+        Serial.println("Failed to enter passive mode for download");
+        return "";
+    }
+    
+    int dataPort;
+    if (!parsePassiveMode(response, dataPort)) {
+        return "";
+    }
+    
+    // Connect to data port
+    if (dataClient.connect(server.c_str(), dataPort)) {
+        Serial.printf("Data connection established on port %d for download\n", dataPort);
+        
+        // Send RETR command
+        controlClient.printf("RETR %s\r\n", filename.c_str());
+        String retrResponse = readResponse();
+        
+        // Check if RETR command was accepted
+        if (!retrResponse.startsWith("150") && !retrResponse.startsWith("125")) {
+            Serial.printf("RETR command failed: %s\n", retrResponse.c_str());
+            dataClient.stop();
+            return "";
+        }
+        
+        // Read file content
+        String fileContent = "";
+        unsigned long timeout = millis() + 30000; // 30 second timeout for download
+        
+        while (dataClient.connected() && millis() < timeout) {
+            if (dataClient.available()) {
+                fileContent += dataClient.readString();
+                timeout = millis() + 5000; // Reset timeout when data is received
+            }
+            delay(10);
+        }
+        
+        dataClient.stop();
+        
+        // Read final response
+        String finalResponse = readResponse();
+        if (finalResponse.startsWith("226") || finalResponse.startsWith("250")) {
+            Serial.printf("File downloaded successfully (%d bytes)\n", fileContent.length());
+            return fileContent;
+        } else {
+            Serial.printf("File download failed: %s\n", finalResponse.c_str());
+            return "";
+        }
+    }
+    
+    Serial.println("Failed to download file - data connection failed");
+    return "";
+}
+
+bool FTPClient::deleteFile(String filename) {
+    Serial.printf("Deleting file: %s\n", filename.c_str());
+    
+    controlClient.printf("DELE %s\r\n", filename.c_str());
+    String response = readResponse();
+    
+    if (response.startsWith("250")) {
+        Serial.println("File deleted successfully");
+        return true;
+    } else {
+        Serial.printf("File deletion failed: %s\n", response.c_str());
+        return false;
+    }
 }
 
 bool FTPClient::uploadData(String basePath, String filename, String csvData, bool createHeader) {
@@ -262,15 +400,64 @@ bool FTPClient::uploadData(String basePath, String filename, String csvData, boo
     bool success = false;
     
     // Check if file exists
-    if (fileExists(filename)) {
-        // File exists, append data
-        success = appendToFile(filename, csvData);
+    bool exists = fileExists(filename);
+    Serial.printf("File existence check result: %s\n", exists ? "EXISTS" : "NOT FOUND");
+    
+    if (exists) {
+        // File exists - download, append data, delete old, create new
+        Serial.println("File exists - downloading existing content to append new data");
+        
+        String existingContent = downloadFile(filename);
+        if (existingContent.length() > 0) {
+            Serial.printf("Downloaded %d bytes of existing data\n", existingContent.length());
+            
+            // Append new data to existing content
+            String fullContent = existingContent + csvData;
+            
+            Serial.printf("Total content size after append: %d bytes\n", fullContent.length());
+            
+            // Delete the old file
+            if (deleteFile(filename)) {
+                // Create new file with combined content
+                success = createFile(filename, fullContent);
+                if (success) {
+                    Serial.println("File updated successfully with appended data");
+                }
+            } else {
+                Serial.println("Failed to delete old file, cannot update");
+                success = false;
+            }
+        } else {
+            Serial.println("Failed to download existing file content");
+            // Fallback: create timestamped file
+            time_t now = time(nullptr);
+            struct tm* timeinfo = localtime(&now);
+            char timestamp[20];
+            strftime(timestamp, sizeof(timestamp), "%H%M%S", timeinfo);
+            
+            int dotIndex = filename.lastIndexOf('.');
+            String baseName = filename.substring(0, dotIndex);
+            String extension = filename.substring(dotIndex);
+            String uniqueFilename = baseName + "_" + String(timestamp) + extension;
+            
+            Serial.printf("Creating fallback timestamped file: %s\n", uniqueFilename.c_str());
+            
+            String fullContent = csvData;
+            if (createHeader) {
+                String header = "Date,Sample Size,Temp (°C),Pressure (hPa),Humidity (RH%)\r\n";
+                fullContent = header + csvData;
+                Serial.println("Header added to fallback file");
+            }
+            success = createFile(uniqueFilename, fullContent);
+        }
     } else {
         // File doesn't exist, create with header if requested
+        Serial.println("File does not exist - creating new file");
         String fullContent = csvData;
         if (createHeader) {
             String header = "Date,Sample Size,Temp (°C),Pressure (hPa),Humidity (RH%)\r\n";
             fullContent = header + csvData;
+            Serial.println("Header added to new file");
         }
         success = createFile(filename, fullContent);
     }

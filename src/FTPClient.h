@@ -36,6 +36,8 @@ public:
     bool fileExists(String filename);
     bool createFile(String filename, String content);
     bool appendToFile(String filename, String content);
+    String downloadFile(String filename);
+    bool deleteFile(String filename);
     
     // High-level operations
     bool uploadData(String basePath, String filename, String csvData, bool createHeader = false);
