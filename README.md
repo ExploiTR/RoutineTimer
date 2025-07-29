@@ -103,6 +103,18 @@ const char* FTP_PASSWORD = "your_password";
 const char* FTP_BASE_PATH = "/data/";
 ```
 
+## Design Choice: FTP vs Dedicated Server
+
+This project uses FTP for data storage instead of a dedicated server setup. The reason is simple and practical: many modern routers support USB storage, allowing you to plug in a USB stick and instantly have FTP server functionality. This approach offers several advantages:
+
+- **Cost-effective**: No need for a separate server or cloud service
+- **Always available**: Router-based storage is always on with your network
+- **Simple setup**: Most routers have built-in FTP server functionality
+- **Local control**: All data stays within your local network
+- **Minimal power consumption**: USB stick consumes negligible power
+
+In this implementation, a leftover USB stick plugged into the router provides reliable, 24/7 data storage without additional hardware costs or complexity.
+
 ## Data Format
 
 CSV files are created daily with format: `DD_MM_YYYY.csv`
