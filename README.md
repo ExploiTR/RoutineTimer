@@ -1,5 +1,7 @@
 # RoutineTimer - Environmental Monitoring System
 
+<img src="screenshot.png" alt="Environmental Monitoring System" width="800">
+
 A complete IoT environmental monitoring solution consisting of an ESP32-based sensor node and a Python visualization application.
 
 ## Overview
