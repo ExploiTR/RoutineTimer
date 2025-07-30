@@ -17,6 +17,7 @@ from PyQt5.QtGui import QFont
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.dates import DateFormatter
 import pandas as pd
 from datetime import datetime, timedelta
 import ftplib
@@ -358,6 +359,13 @@ class MatplotlibCanvas(FigureCanvas):
         self.axes = self.figure.subplots(2, 2)
         self.figure.tight_layout(pad=3.0)
         
+        # Initialize hover annotation variables
+        self.current_df = None
+        self.hover_annotation = None
+        
+        # Connect mouse motion event
+        self.mpl_connect('motion_notify_event', self.on_hover)
+        
         # Initial empty plot
         self.clear_plots()
         self.logger.info("Matplotlib canvas initialized successfully")
@@ -365,6 +373,9 @@ class MatplotlibCanvas(FigureCanvas):
     def clear_plots(self):
         """Clear all plots"""
         self.logger.debug("Clearing all plots")
+        
+        # Clear stored data for hover functionality
+        self.current_df = None
         
         try:
             for i, ax in enumerate(self.axes.flat):
@@ -387,10 +398,91 @@ class MatplotlibCanvas(FigureCanvas):
             self.logger.error(f"Error clearing plots: {e}")
             self.logger.debug(f"Full traceback: {traceback.format_exc()}")
     
+    def on_hover(self, event):
+        """Handle mouse hover events to show data point values"""
+        if event.inaxes is None or self.current_df is None or len(self.current_df) == 0:
+            # Clear any existing annotations
+            if hasattr(self, 'hover_annotation') and self.hover_annotation:
+                self.hover_annotation.set_visible(False)
+                self.draw_idle()
+            return
+        
+        # Clear previous annotation
+        if hasattr(self, 'hover_annotation') and self.hover_annotation:
+            self.hover_annotation.set_visible(False)
+        
+        # Check which subplot we're in and find the closest data point
+        ax = event.inaxes
+        x_pos = event.xdata
+        y_pos = event.ydata
+        
+        if x_pos is None or y_pos is None:
+            self.draw_idle()
+            return
+        
+        # Find the closest data point
+        try:
+            # Convert matplotlib date number to datetime for comparison
+            from matplotlib.dates import num2date
+            hover_time = num2date(x_pos)
+            
+            # Make sure both datetime objects are timezone-naive for comparison
+            if hover_time.tzinfo is not None:
+                hover_time = hover_time.replace(tzinfo=None)
+            
+            # Find closest time point in data
+            time_diffs = abs(self.current_df['datetime'] - hover_time)
+            closest_idx = time_diffs.idxmin()
+            closest_point = self.current_df.iloc[closest_idx]
+            
+            # Check if we're close enough to the point (within reasonable distance)
+            time_tolerance = pd.Timedelta(hours=2)  # 2 hours tolerance
+            if time_diffs.iloc[closest_idx] > time_tolerance:
+                return
+            
+            # Determine which plot we're hovering over and get appropriate values
+            annotation_text = ""
+            display_x = closest_point['datetime']
+            display_y = 0
+            
+            if ax == self.axes[0, 0]:  # Temperature plot
+                display_y = closest_point['temperature']
+                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nTemp: {display_y:.1f}°C"
+            elif ax == self.axes[0, 1]:  # Humidity plot
+                display_y = closest_point['humidity']
+                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nHumidity: {display_y:.1f}%RH"
+            elif ax == self.axes[1, 0]:  # Pressure plot
+                display_y = closest_point['pressure']
+                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nPressure: {display_y:.1f}hPa"
+            elif ax == self.axes[1, 1]:  # Sample size plot
+                display_y = closest_point['sample_size']
+                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nSample Size: {display_y}"
+            
+            if annotation_text:
+                # Create annotation at the data point
+                self.hover_annotation = ax.annotate(
+                    annotation_text,
+                    xy=(display_x, display_y),
+                    xytext=(20, 20),
+                    textcoords='offset points',
+                    bbox={'boxstyle': 'round,pad=0.5', 'fc': 'lightyellow', 'alpha': 0.9, 'edgecolor': 'gray'},
+                    arrowprops={'arrowstyle': '->', 'connectionstyle': 'arc3,rad=0', 'color': 'gray'},
+                    fontsize=9,
+                    zorder=1000
+                )
+                
+            self.draw_idle()
+            
+        except Exception as e:
+            self.logger.debug(f"Error in hover handler: {e}")
+    
     def create_time_series_plots(self, df: pd.DataFrame):
         """Create time series plots"""
         self.logger.info(f"Creating time series plots for {len(df)} data points")
         self.logger.debug(f"Data range: {df['datetime'].min()} to {df['datetime'].max()}")
+        
+        # Store DataFrame for hover functionality
+        self.current_df = df.copy()
         
         try:
             # Clear previous plots
@@ -525,7 +617,7 @@ class EnvironmentalDataPlotter(QMainWindow):
             
             # Server
             ftp_layout.addWidget(QLabel("Server:"), 0, 0)
-            self.server_edit = QLineEdit("192.168.1.1")
+            self.server_edit = QLineEdit("192.168.0.1")
             ftp_layout.addWidget(self.server_edit, 0, 1)
             
             # Username
