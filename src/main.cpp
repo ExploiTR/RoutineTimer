@@ -43,7 +43,7 @@ const long GMT_OFFSET_SEC = 5.5 * 3600;         // IST UTC+5:30
 const int DAYLIGHT_OFFSET_SEC = 0;
 
 // FTP Configuration
-const char* FTP_SERVER = "192.168.1.1";
+const char* FTP_SERVER = "192.168.0.1";
 const int FTP_PORT = 21;
 const char* FTP_USER = "admin";
 const char* FTP_PASSWORD = "f6a3067773";
