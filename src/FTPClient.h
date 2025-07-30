@@ -38,6 +38,9 @@ public:
     bool appendToFile(String filename, String content);
     String downloadFile(String filename);
     bool deleteFile(String filename);
+    bool renameFile(String oldName, String newName);
+    bool safeDeleteFile(String filename); // Keep trying until deleted
+    bool isConnected(); // Check if still connected
     
     // High-level operations
     bool uploadData(String basePath, String filename, String csvData, bool createHeader = false);
