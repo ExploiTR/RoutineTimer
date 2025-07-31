@@ -1,130 +1,225 @@
 # Low-Level Design (LLD) - Environmental Monitoring System
 
+## Implementation Overview
+
+The Low-Level Design provides detailed implementation specifications for the dual-platform environmental monitoring system, covering ESP32/ESP8266 firmware architecture, Python application design, and inter-component communication protocols.
+
+## Platform-Specific Implementation Matrix
+
+| Component | ESP32 Implementation | ESP8266 Implementation |
+|-----------|---------------------|------------------------|
+| **Sensor** | BME280 (Temp+Humidity+Pressure) | BMP280 (Temp+Pressure) |
+| **I2C Pins** | SDA=GPIO21, SCL=GPIO22 | SDA=GPIO5(D1), SCL=GPIO4(D2) |
+| **File Suffix** | None (`DD_MM_YYYY.csv`) | `_outside` (`DD_MM_YYYY_outside.csv`) |
+| **Power Profile** | ~10μA sleep, 150-250mA active | ~20μA sleep, 120-200mA active |
+| **WiFi Support** | 802.11b/g/n (2.4GHz + 5GHz) | 802.11b/g/n (2.4GHz only) |
+| **Additional Features** | Bluetooth (disabled for power) | None |
+| **Build Flag** | `-DUSE_BME280=1` | `-DUSE_BMP280=1` |
+
 ## Module-Level Architecture
 
 ```mermaid
 graph TD
-    subgraph "ESP32 Firmware Modules"
-        MAIN[main.cpp]
-        FTP_H[FTPClient.h]
-        FTP_CPP[FTPClient.cpp]
-        BME[BME280 Driver]
-        WIFI[WiFi Manager]
-        SLEEP[Power Manager]
+    subgraph "ESP32/ESP8266 Firmware Modules"
+        MAIN[main.cpp<br/>Application Logic<br/>Platform Abstraction]
+        SENSOR[Sensor Interface<br/>BME280/BMP280<br/>I2C Communication]
+        FTP_H[FTPClient.h<br/>Class Definition<br/>Public Interface]
+        FTP_CPP[FTPClient.cpp<br/>Protocol Implementation<br/>Passive Mode Support]
+        POWER[Power Management<br/>Deep Sleep Control<br/>WiFi State Machine]
+        TIME[Time Synchronization<br/>NTP Client<br/>Timezone Handling]
     end
     
     subgraph "Python Application Modules"
-        GUI[PyQt5 GUI]
-        FTP_PY[FTP Client]
-        PLOT[Matplotlib Engine]
-        DATA[Pandas Processor]
+        GUI_MAIN[MainWindow<br/>PyQt5 Interface<br/>Event Handling]
+        FTP_MGR[FTPDataManager<br/>Connection Management<br/>File Operations]
+        DATA_PROC[DataProcessor<br/>Pandas Operations<br/>CSV Parsing]
+        PLOT_ENG[PlotGenerator<br/>Matplotlib Engine<br/>Time Series Rendering]
+        THREAD_MGR[ThreadManager<br/>Background Downloads<br/>Progress Tracking]
     end
     
     subgraph "External Dependencies"
-        ARDUINO[Arduino Framework]
-        ADAFRUIT[Adafruit Libraries]
-        ESP_IDF[ESP-IDF Components]
+        ARDUINO[Arduino Framework<br/>ESP32/ESP8266 Core]
+        ADAFRUIT[Adafruit Libraries<br/>BME280/BMP280 Drivers]
+        WIFI_STACK[WiFi Stack<br/>TCP/IP Implementation]
+        PYTHON_LIBS[Python Libraries<br/>PyQt5, Pandas, Matplotlib]
     end
     
+    MAIN --> SENSOR
     MAIN --> FTP_H
-    MAIN --> BME
-    MAIN --> WIFI
-    MAIN --> SLEEP
+    MAIN --> POWER
+    MAIN --> TIME
     FTP_H --> FTP_CPP
     
-    GUI --> FTP_PY
-    GUI --> PLOT
-    GUI --> DATA
+    GUI_MAIN --> FTP_MGR
+    GUI_MAIN --> DATA_PROC
+    GUI_MAIN --> PLOT_ENG
+    GUI_MAIN --> THREAD_MGR
     
+    SENSOR --> ADAFRUIT
     MAIN --> ARDUINO
-    BME --> ADAFRUIT
-    WIFI --> ESP_IDF
+    FTP_CPP --> WIFI_STACK
+    GUI_MAIN --> PYTHON_LIBS
 ```
 
-## ESP32 Firmware Design
+## Firmware Design Architecture
 
-### Main Application Flow
+### Application State Machine
 
 ```mermaid
 flowchart TD
-    START([Power On/Wake]) --> INIT[Initialize Serial & Power Optimization]
-    INIT --> BME_INIT{Initialize BME280}
-    BME_INIT -->|Success| COLLECT[Collect 5 Sensor Readings]
-    BME_INIT -->|Fail| SLEEP[Deep Sleep 5min]
+    START([Power On/Wake from Sleep]) --> INIT[Initialize System<br/>Serial + Power Optimization]
+    INIT --> SENSOR_INIT{Initialize Sensor<br/>BME280 or BMP280}
     
-    COLLECT --> WIFI_CONN{Connect WiFi}
-    WIFI_CONN -->|Success| NTP_SYNC[Sync NTP Time]
-    WIFI_CONN -->|Fail| SLEEP
+    SENSOR_INIT -->|Success| COLLECT[Collect Sensor Readings<br/>5 samples @ 3sec intervals]
+    SENSOR_INIT -->|Fail| I2C_SCAN[Run I2C Device Scan<br/>Debug Output]
+    I2C_SCAN --> SLEEP_FAIL[Enter Deep Sleep<br/>5 minutes]
     
-    NTP_SYNC --> CALC[Calculate Averages]
-    CALC --> FTP_UP{Upload to FTP}
-    FTP_UP -->|Success| CLEANUP[Disconnect WiFi]
-    FTP_UP -->|Fail| CLEANUP
+    COLLECT --> WIFI_CONNECT{Connect to WiFi<br/>10 second timeout}
+    WIFI_CONNECT -->|Success| NTP_SYNC[Synchronize NTP Time<br/>3 attempts max]
+    WIFI_CONNECT -->|Fail| SLEEP_FAIL
     
-    CLEANUP --> SLEEP
-    SLEEP --> START
+    NTP_SYNC --> CALC_AVG[Calculate Averages<br/>Temp, Pressure, Humidity*]
+    CALC_AVG --> FTP_UPLOAD{Upload Data to FTP<br/>2 retry attempts}
+    
+    FTP_UPLOAD -->|Success| WIFI_CLEANUP[Disconnect WiFi<br/>Power Down Radio]
+    FTP_UPLOAD -->|Fail| WIFI_CLEANUP
+    
+    WIFI_CLEANUP --> SLEEP_SUCCESS[Enter Deep Sleep<br/>5 minutes]
+    SLEEP_SUCCESS --> START
+    SLEEP_FAIL --> START
+    
+    style START fill:#e1f5fe
+    style SLEEP_SUCCESS fill:#c8e6c9
+    style SLEEP_FAIL fill:#ffcdd2
 ```
 
-### Core Functions
+*Note: Humidity only available on ESP32+BME280
 
-#### 1. setup()
+### Core Function Implementation
+
+#### 1. setup() - Main Application Entry Point
 ```cpp
 void setup() {
-    Serial.begin(SERIAL_BAUD);
-    optimizePowerConsumption();     // Disable BT, manage WiFi
+    // Phase 1: System Initialization
+    Serial.begin(SERIAL_BAUD);                    // 115200 baud rate
+    delay(1000);                                  // Allow serial stabilization
     
+    // Platform identification and logging
+    #ifdef ESP32
+    Serial.println("=== ESP32 BME280 Environmental Logger ===");
+    Serial.printf("I2C Pins: SDA=%d, SCL=%d\n", SDA_PIN, SCL_PIN);
+    #elif defined(ESP8266)  
+    Serial.println("=== ESP8266 BMP280 Environmental Logger ===");
+    Serial.printf("I2C Pins: SDA=%d (D1), SCL=%d (D2)\n", SDA_PIN, SCL_PIN);
+    #endif
+    
+    // Phase 2: Power Optimization
+    optimizePowerConsumption();                   // Disable Bluetooth, optimize WiFi
+    
+    // Phase 3: Sensor Initialization with Fallback
     if (!initializeBME280()) {
-        goToSleep();
+        Serial.println("Sensor initialization failed");
+        scanI2CDevices();                         // Debug I2C bus
+        goToSleep();                             // Fail-safe sleep
         return;
     }
     
-    collectSensorReadings();        // Gather 5 samples
+    // Phase 4: Data Collection
+    collectSensorReadings();                      // 5 samples with averaging
     
+    // Phase 5: Network Operations
     if (!connectToWiFi()) {
+        Serial.println("WiFi connection failed");
         goToSleep();
         return;
     }
     
-    syncTime();                     // NTP synchronization
+    syncTime();                                   // NTP synchronization (optional)
     
-    // Calculate averages and upload
+    // Phase 6: Data Processing and Upload
     float avgTemp = tempSum / sampleCount;
     float avgPressure = pressureSum / sampleCount;
+    #ifdef USE_BME280
     float avgHumidity = humiditySum / sampleCount;
+    #else
+    float avgHumidity = 0.0;                     // BMP280 has no humidity
+    #endif
     
     uploadDataToFTP(avgTemp, avgPressure, avgHumidity);
     
-    // Cleanup and sleep
+    // Phase 7: Cleanup and Sleep
     WiFi.disconnect(true);
-    goToSleep();
+    WiFi.mode(WIFI_OFF);
+    #ifdef ESP32
+    esp_wifi_stop();                             // ESP32-specific WiFi shutdown
+    #endif
+    
+    goToSleep();                                 // Enter 5-minute deep sleep
 }
 ```
 
-#### 2. BME280 Initialization
+#### 2. Sensor Initialization with Multi-Address Support
 ```cpp
 bool initializeBME280() {
-    Wire.begin(SDA_PIN, SCL_PIN);
-    Wire.setClock(I2C_CLOCK);
+    // I2C Bus Initialization
+    Wire.begin(SDA_PIN, SCL_PIN);                // Platform-specific pins
+    Wire.setClock(I2C_CLOCK);                    // 100kHz for reliability
+    delay(500);                                  // Sensor stabilization
     
-    // Try primary address (0x76)
-    if (!bme.begin(BME280_ADDR_PRIMARY, &Wire)) {
-        // Try secondary address (0x77)
-        if (!bme.begin(BME280_ADDR_SECONDARY, &Wire)) {
-            return false;
+    // Multi-attempt initialization with address fallback
+    const int maxAttempts = 3;
+    const uint8_t addresses[] = {BME280_ADDR_PRIMARY, BME280_ADDR_SECONDARY};
+    
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        for (int addrIdx = 0; addrIdx < 2; addrIdx++) {
+            uint8_t addr = addresses[addrIdx];
+            
+            #ifdef USE_BME280
+            bool success = bme.begin(addr, &Wire);
+            #else
+            bool success = bmp.begin(addr);
+            #endif
+            
+            if (success) {
+                Serial.printf("Sensor found at 0x%02X on attempt %d\n", addr, attempt);
+                
+                // Configure sensor parameters
+                #ifdef USE_BME280
+                bme.setSampling(SENSOR_MODE, TEMP_OVERSAMPLING, PRESSURE_OVERSAMPLING,
+                               HUMIDITY_OVERSAMPLING, FILTER_SETTING, STANDBY_TIME);
+                #else
+                bmp.setSampling(SENSOR_MODE, TEMP_OVERSAMPLING, PRESSURE_OVERSAMPLING,
+                               FILTER_SETTING, STANDBY_TIME);
+                #endif
+                
+                delay(WARMUP_TIME);              // 2-second warmup
+                
+                // Validate with test reading
+                #ifdef USE_BME280
+                float testTemp = bme.readTemperature();
+                float testPressure = bme.readPressure() / 100.0F;
+                #else
+                float testTemp = bmp.readTemperature();
+                float testPressure = bmp.readPressure() / 100.0F;
+                #endif
+                
+                if (!isnan(testTemp) && !isnan(testPressure)) {
+                    Serial.printf("Test readings: %.1f°C, %.1fhPa\n", testTemp, testPressure);
+                    return true;
+                }
+            }
+        }
+        
+        if (attempt < maxAttempts) {
+            delay(1000);                         // Wait before retry
         }
     }
     
-    // Configure sensor settings
-    bme.setSampling(SENSOR_MODE, TEMP_OVERSAMPLING, 
-                   PRESSURE_OVERSAMPLING, HUMIDITY_OVERSAMPLING, 
-                   FILTER_SETTING, STANDBY_TIME);
-    
-    delay(WARMUP_TIME);
-    return true;
+    return false;                                // All attempts failed
 }
 ```
 
-#### 3. Data Collection
+#### 3. Data Collection with Error Handling
 ```cpp
 void collectSensorReadings() {
     tempSum = 0;
@@ -132,25 +227,55 @@ void collectSensorReadings() {
     humiditySum = 0;
     sampleCount = 0;
     
+    Serial.printf("Collecting %d sensor readings...\n", READINGS_PER_CYCLE);
+    
     for (int i = 0; i < READINGS_PER_CYCLE; i++) {
+        // Platform-specific sensor reading
+        #ifdef USE_BME280
         float temperature = bme.readTemperature();
-        float pressure = bme.readPressure() / 100.0F;  // Pa to hPa
+        float pressure = bme.readPressure() / 100.0F;    // Pa to hPa conversion
         float humidity = bme.readHumidity();
+        #else
+        float temperature = bmp.readTemperature();
+        float pressure = bmp.readPressure() / 100.0F;    // Pa to hPa conversion
+        float humidity = 0.0;                            // BMP280 has no humidity
+        #endif
         
-        // Validate readings
-        if (!isnan(temperature) && !isnan(pressure) && !isnan(humidity)) {
+        // Data validation and accumulation
+        if (!isnan(temperature) && !isnan(pressure) && 
+            temperature > -40 && temperature < 85 &&     // Reasonable temperature range
+            pressure > 800 && pressure < 1200) {         // Reasonable pressure range
+            
+            #ifdef USE_BME280
+            if (!isnan(humidity) && humidity >= 0 && humidity <= 100) {
+                humiditySum += humidity;
+            }
+            #endif
+            
             tempSum += temperature;
             pressureSum += pressure;
-            humiditySum += humidity;
             sampleCount++;
+            
+            Serial.printf("Reading %d: %.1f°C, %.1fhPa", i+1, temperature, pressure);
+            #ifdef USE_BME280
+            Serial.printf(", %.2f%%\n", humidity);
+            #else
+            Serial.println();
+            #endif
+        } else {
+            Serial.printf("Reading %d: Invalid data (skipped)\n", i+1);
         }
         
-        delay(READING_INTERVAL);
+        if (i < READINGS_PER_CYCLE - 1) {
+            delay(READING_INTERVAL);                     // 3-second interval between readings
+        }
     }
+    
+    Serial.printf("Valid readings collected: %d/%d\n", sampleCount, READINGS_PER_CYCLE);
 }
 ```
 
-### FTPClient Class Design
+### Advanced FTP Client Implementation
 
 ```mermaid
 classDiagram
@@ -161,58 +286,104 @@ classDiagram
         -int port
         -String username
         -String password
+        -bool verboseLogging
         
-        +setServer(String, int)
-        +setCredentials(String, String)
+        +setServer(String, int) void
+        +setCredentials(String, String) void
         +connect() bool
         +login() bool
-        +disconnect()
+        +disconnect() void
         +changeDirectory(String) bool
         +fileExists(String) bool
         +createFile(String, String) bool
         +appendToFile(String, String) bool
         +downloadFile(String) String
         +deleteFile(String) bool
+        +safeDeleteFile(String) bool
         +uploadData(String, String, String, bool) bool
         
         -readResponse() String
         -parsePassiveMode(String, int&) bool
+        -isConnected() bool
+        -sendCommand(String) bool
+        -establishDataConnection(int) bool
     }
+    
+    note for FTPClient "Implements RFC 959 FTP Protocol\nwith passive mode support\nand robust error handling"
 ```
 
-#### Key FTP Operations
+#### Key FTP Operations Implementation
 
-##### File Upload Strategy
+##### Data Upload Strategy with Retry Logic
 ```cpp
 bool uploadData(String basePath, String filename, String csvData, bool createHeader) {
-    // Retry mechanism (2 attempts)
-    for (int attempt = 1; attempt <= 2; attempt++) {
-        if (!connect() || !login() || !changeDirectory(basePath)) {
-            continue;  // Retry
+    const int maxRetries = 2;
+    const unsigned long retryDelay = 2000;       // 2 seconds between retries
+    
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        Serial.printf("FTP upload attempt %d/%d for %s\n", attempt, maxRetries, filename.c_str());
+        
+        // Establish control connection
+        if (!connect()) {
+            Serial.println("FTP control connection failed");
+            if (attempt < maxRetries) delay(retryDelay);
+            continue;
         }
         
-        bool exists = fileExists(filename);
+        // Authenticate with server
+        if (!login()) {
+            Serial.println("FTP authentication failed");
+            disconnect();
+            if (attempt < maxRetries) delay(retryDelay);
+            continue;
+        }
         
-        if (exists) {
-            // Download existing content
+        // Navigate to target directory
+        if (!changeDirectory(basePath)) {
+            Serial.printf("FTP directory change failed: %s\n", basePath.c_str());
+            disconnect();
+            if (attempt < maxRetries) delay(retryDelay);
+            continue;
+        }
+        
+        // Check if file already exists
+        bool filePresent = fileExists(filename);
+        String finalContent = csvData;
+        
+        if (filePresent) {
+            // Download existing content for appending
             String existingContent = downloadFile(filename);
-            String fullContent = existingContent + csvData;
-            
-            // Delete and recreate with appended data
-            if (deleteFile(filename) && createFile(filename, fullContent)) {
-                return true;
+            if (existingContent.length() > 0) {
+                finalContent = existingContent + csvData;
+                
+                // Use safe delete to handle file locking
+                if (!safeDeleteFile(filename)) {
+                    Serial.println("Failed to delete existing file for update");
+                    disconnect();
+                    if (attempt < maxRetries) delay(retryDelay);
+                    continue;
+                }
             }
+        } else if (createHeader) {
+            // Add CSV header for new files
+            String header = "Date,Sample Size,Temp (°C),Pressure (hPa),Humidity (RH%)\r\n";
+            finalContent = header + csvData;
+        }
+        
+        // Upload updated content
+        if (createFile(filename, finalContent)) {
+            Serial.printf("FTP upload successful: %s (%d bytes)\n", 
+                         filename.c_str(), finalContent.length());
+            disconnect();
+            return true;
         } else {
-            // Create new file with optional header
-            String fullContent = createHeader ? 
-                "Date,Sample Size,Temp (°C),Pressure (hPa),Humidity (RH%)\r\n" + csvData : 
-                csvData;
-            
-            if (createFile(filename, fullContent)) {
-                return true;
-            }
+            Serial.println("FTP file creation failed");
+            disconnect();
+            if (attempt < maxRetries) delay(retryDelay);
         }
     }
+    
+    Serial.printf("FTP upload failed after %d attempts\n", maxRetries);
     return false;
 }
 ```
@@ -220,33 +391,101 @@ bool uploadData(String basePath, String filename, String csvData, bool createHea
 ##### Passive Mode Data Transfer
 ```cpp
 bool createFile(String filename, String content) {
-    // Set binary mode
+    // Set binary transfer mode for data integrity
     controlClient.printf("TYPE I\r\n");
-    readResponse();
+    String typeResponse = readResponse();
+    if (!typeResponse.startsWith("200")) {
+        Serial.println("Failed to set binary mode");
+        return false;
+    }
     
-    // Enter passive mode
+    // Enter passive mode for firewall compatibility
     controlClient.printf("PASV\r\n");
-    String response = readResponse();
+    String pasvResponse = readResponse();
     
     int dataPort;
-    if (!parsePassiveMode(response, dataPort)) {
+    if (!parsePassiveMode(pasvResponse, dataPort)) {
+        Serial.println("Failed to parse passive mode response");
         return false;
     }
     
     // Establish data connection
-    if (dataClient.connect(server.c_str(), dataPort)) {
-        controlClient.printf("STOR %s\r\n", filename.c_str());
-        String storResponse = readResponse();
+    if (!dataClient.connect(server.c_str(), dataPort)) {
+        Serial.printf("Failed to connect to data port %d\n", dataPort);
+        return false;
+    }
+    
+    // Initiate file storage command
+    controlClient.printf("STOR %s\r\n", filename.c_str());
+    String storResponse = readResponse();
+    
+    if (storResponse.startsWith("150") || storResponse.startsWith("125")) {
+        // Transfer data through data connection
+        size_t bytesWritten = dataClient.print(content);
+        dataClient.flush();
+        dataClient.stop();
         
-        if (storResponse.startsWith("150") || storResponse.startsWith("125")) {
-            dataClient.print(content);
-            dataClient.flush();
-            dataClient.stop();
-            
-            String finalResponse = readResponse();
-            return finalResponse.startsWith("226") || finalResponse.startsWith("250");
+        Serial.printf("Transferred %d bytes to %s\n", bytesWritten, filename.c_str());
+        
+        // Wait for transfer completion confirmation
+        String finalResponse = readResponse();
+        bool success = finalResponse.startsWith("226") || finalResponse.startsWith("250");
+        
+        if (success) {
+            Serial.println("File transfer completed successfully");
+        } else {
+            Serial.printf("File transfer failed: %s\n", finalResponse.c_str());
+        }
+        
+        return success;
+    } else {
+        Serial.printf("STOR command failed: %s\n", storResponse.c_str());
+        dataClient.stop();
+        return false;
+    }
+}
+```
+
+##### Passive Mode Response Parsing
+```cpp
+bool parsePassiveMode(String response, int& dataPort) {
+    // Parse response format: 227 Entering Passive Mode (192,168,1,1,20,40)
+    // Port calculation: 20*256 + 40 = 5160
+    
+    int start = response.indexOf('(');
+    int end = response.indexOf(')', start);
+    
+    if (start == -1 || end == -1) {
+        Serial.println("Invalid passive mode response format");
+        return false;
+    }
+    
+    String dataInfo = response.substring(start + 1, end);
+    Serial.printf("Parsing passive mode data: %s\n", dataInfo.c_str());
+    
+    // Extract port components from comma-separated values
+    int commaPositions[5];
+    int commaCount = 0;
+    
+    for (int i = 0; i < dataInfo.length() && commaCount < 5; i++) {
+        if (dataInfo.charAt(i) == ',') {
+            commaPositions[commaCount++] = i;
         }
     }
+    
+    if (commaCount >= 5) {
+        // Extract high and low port bytes
+        int portHigh = dataInfo.substring(commaPositions[3] + 1, commaPositions[4]).toInt();
+        int portLow = dataInfo.substring(commaPositions[4] + 1).toInt();
+        
+        dataPort = portHigh * 256 + portLow;
+        Serial.printf("Calculated data port: %d (high=%d, low=%d)\n", 
+                     dataPort, portHigh, portLow);
+        
+        return (dataPort > 0 && dataPort < 65536);
+    }
+    
+    Serial.printf("Failed to parse passive mode response (found %d commas)\n", commaCount);
     return false;
 }
 ```

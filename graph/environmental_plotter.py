@@ -322,6 +322,7 @@ class FTPDownloadThread(QThread):
                         if is_outdoor:
                             outdoor_data_cache[date_str] = content
                             self.logger.debug(f"Outdoor file {filename} mapped to date: {date_str}")
+                            self.logger.debug(f"Outdoor content preview: {content[:150]}")
                         else:
                             data_cache[date_str] = content
                             self.logger.debug(f"Indoor file {filename} mapped to date: {date_str}")
@@ -343,9 +344,16 @@ class FTPDownloadThread(QThread):
             available_dates.sort(key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
             self.logger.debug(f"Sorted dates: {available_dates}")
             
-            self.logger.info(f"Download process completed successfully: {len(available_dates)} files")
+            # Summary logging
+            indoor_count = len(data_cache)
+            outdoor_count = len(outdoor_data_cache)
+            self.logger.info(f"Download summary: {indoor_count} indoor files, {outdoor_count} outdoor files")
+            self.logger.debug(f"Indoor dates: {list(data_cache.keys())}")
+            self.logger.debug(f"Outdoor dates: {list(outdoor_data_cache.keys())}")
+            
+            self.logger.info(f"Download process completed successfully: {len(available_dates)} unique dates")
             self.progress_updated.emit(100)
-            self.status_updated.emit(f"Successfully downloaded {len(available_dates)} files")
+            self.status_updated.emit(f"Successfully downloaded {indoor_count + outdoor_count} files ({indoor_count} indoor, {outdoor_count} outdoor)")
             self.download_complete.emit(data_cache, outdoor_data_cache, available_dates)
             
         except Exception as e:
@@ -466,7 +474,11 @@ class MatplotlibCanvas(FigureCanvas):
                 annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nIndoor Temp: {display_y:.1f}°C"
             elif ax == self.axes[0, 1]:  # Humidity plot
                 display_y = closest_point['humidity']
-                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nHumidity: {display_y:.1f}%RH"
+                # Only show humidity if it's a valid value (not NaN/NA for outdoor data)
+                if pd.isna(display_y):
+                    annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nHumidity: N/A"
+                else:
+                    annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nHumidity: {display_y:.1f}%RH"
             elif ax == self.axes[1, 0]:  # Pressure plot
                 display_y = closest_point['pressure']
                 annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nIndoor Pressure: {display_y:.1f}hPa"
@@ -500,6 +512,10 @@ class MatplotlibCanvas(FigureCanvas):
     def calculate_heat_index(self, temp_c: float, humidity: float) -> float:
         """Calculate heat index (feels like temperature) from temperature and humidity"""
         try:
+            # If humidity is missing (NaN/NA), return actual temperature
+            if pd.isna(humidity):
+                return temp_c
+            
             # Convert Celsius to Fahrenheit
             temp_f = (temp_c * 9/5) + 32
             
@@ -562,16 +578,17 @@ class MatplotlibCanvas(FigureCanvas):
                 temp_range_outdoor = f"Outdoor: {outdoor_df['temperature'].min():.1f}°C to {outdoor_df['temperature'].max():.1f}°C"
                 self.logger.debug(f"Temperature range - {temp_range_outdoor}")
             
-            # Plot 2: Humidity (Indoor only - outdoor sensor doesn't have humidity)
+            # Plot 2: Humidity (Indoor only - outdoor sensor doesn't have humidity data)
             self.logger.debug("Creating humidity plot")
             self.axes[0, 1].plot(indoor_df['datetime'], indoor_df['humidity'], 'b-', linewidth=1.5, label='Indoor Humidity')
-            self.axes[0, 1].set_title('Humidity Over Time')
+            self.axes[0, 1].set_title('Humidity Over Time (Indoor Only)')
             self.axes[0, 1].set_ylabel('Humidity (%RH)')
             self.axes[0, 1].grid(True, alpha=0.3)
             self.axes[0, 1].tick_params(axis='x', rotation=45)
             self.axes[0, 1].legend()
             humidity_range = f"{indoor_df['humidity'].min():.1f}% to {indoor_df['humidity'].max():.1f}%"
             self.logger.debug(f"Humidity range: {humidity_range}")
+            # Note: Outdoor humidity is not plotted as outdoor sensors report "N/A" for humidity
             
             # Plot 3: Pressure (Indoor and Outdoor)
             self.logger.debug("Creating pressure plot")
@@ -946,22 +963,35 @@ class EnvironmentalDataPlotter(QMainWindow):
             for i, line in enumerate(data_lines):
                 try:
                     parts = line.split(',')
-                    if len(parts) >= 5:
-                        # Format: "DD/MM/YYYY HH:MM,sample_size,temperature,pressure,humidity"
+                    if len(parts) >= 4:  # Changed from 5 to 4 to handle outdoor format
+                        # Format: "DD/MM/YYYY HH:MM,sample_size,temperature,pressure[,humidity]"
                         datetime_str = parts[0].strip()  # Already contains both date and time
                         sample_size = int(parts[1].strip())
                         temperature = float(parts[2].strip())
                         pressure = float(parts[3].strip())
-                        humidity = float(parts[4].strip())
+                        
+                        # Handle humidity - might be missing or "N/A" for outdoor data
+                        humidity = None
+                        if len(parts) >= 5:
+                            humidity_str = parts[4].strip()
+                            if humidity_str.upper() not in ['N/A', 'NA', '']:
+                                try:
+                                    humidity = float(humidity_str)
+                                except ValueError:
+                                    humidity = None
                         
                         parsed_data.append({
                             'datetime': datetime_str,
                             'sample_size': sample_size,
                             'temperature': temperature,
                             'pressure': pressure,
-                            'humidity': humidity
+                            'humidity': humidity if humidity is not None else pd.NA  # Use pandas NA for missing data
                         })
-                        self.logger.debug(f"Parsed line {i+1}: T={temperature}°C, P={pressure}hPa, H={humidity}%RH")
+                        
+                        if humidity is not None:
+                            self.logger.debug(f"Parsed line {i+1}: T={temperature}°C, P={pressure}hPa, H={humidity}%RH")
+                        else:
+                            self.logger.debug(f"Parsed line {i+1} (outdoor): T={temperature}°C, P={pressure}hPa, H=N/A")
                     else:
                         self.logger.warning(f"Line {i+1} has insufficient data ({len(parts)} parts): {line}")
                         
@@ -1044,14 +1074,18 @@ class EnvironmentalDataPlotter(QMainWindow):
                 if date_str in self.outdoor_data_cache:
                     self.logger.debug(f"Processing outdoor data for {date_str}")
                     content = self.outdoor_data_cache[date_str]
+                    self.logger.debug(f"Outdoor content preview for {date_str}: {content[:100]}")
                     df = self.parse_csv_content(content)
                     if not df.empty:
                         outdoor_data.append(df)
                         self.logger.debug(f"Added {len(df)} outdoor records from {date_str}")
+                        self.logger.debug(f"Outdoor data sample: T={df['temperature'].iloc[0]:.1f}°C, P={df['pressure'].iloc[0]:.1f}hPa")
                     else:
                         self.logger.warning(f"No valid outdoor data found for {date_str}")
                 else:
                     self.logger.debug(f"No outdoor data available for {date_str}")
+            
+            self.logger.info(f"Total outdoor data files processed: {len(outdoor_data)}")
             
             if not indoor_data:
                 self.logger.warning("No indoor data found in selected date range")
@@ -1069,6 +1103,11 @@ class EnvironmentalDataPlotter(QMainWindow):
                 combined_outdoor_df = pd.concat(outdoor_data, ignore_index=True)
                 combined_outdoor_df = combined_outdoor_df.sort_values('datetime')
                 self.logger.info(f"Combined outdoor data: {len(combined_outdoor_df)} total records")
+                self.logger.debug(f"Outdoor data time range: {combined_outdoor_df['datetime'].min()} to {combined_outdoor_df['datetime'].max()}")
+                self.logger.debug(f"Outdoor temp range: {combined_outdoor_df['temperature'].min():.1f}°C to {combined_outdoor_df['temperature'].max():.1f}°C")
+                self.logger.debug(f"Outdoor pressure range: {combined_outdoor_df['pressure'].min():.1f}hPa to {combined_outdoor_df['pressure'].max():.1f}hPa")
+            else:
+                self.logger.info("No outdoor data available for plotting")
             
             self.logger.info(f"Combined indoor data: {len(combined_indoor_df)} total records")
             self.logger.debug(f"Indoor data time range: {combined_indoor_df['datetime'].min()} to {combined_indoor_df['datetime'].max()}")
