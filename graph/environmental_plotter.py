@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.dates import DateFormatter
+from matplotlib.ticker import ScalarFormatter
 import pandas as pd
 from datetime import datetime, timedelta
 import ftplib
@@ -601,6 +602,23 @@ class MatplotlibCanvas(FigureCanvas):
             self.axes[1, 0].grid(True, alpha=0.3)
             self.axes[1, 0].tick_params(axis='x', rotation=45)
             self.axes[1, 0].legend()
+            
+            # Fix Y-axis formatting to prevent scientific notation
+            pressure_formatter = ScalarFormatter(useOffset=False)
+            pressure_formatter.set_scientific(False)
+            self.axes[1, 0].yaxis.set_major_formatter(pressure_formatter)
+            
+            # Set Y-axis limits to show proper pressure range
+            all_pressure_values = indoor_df['pressure'].tolist()
+            if outdoor_df is not None and not outdoor_df.empty:
+                all_pressure_values.extend(outdoor_df['pressure'].tolist())
+            
+            min_pressure = min(all_pressure_values)
+            max_pressure = max(all_pressure_values)
+            pressure_range = max_pressure - min_pressure
+            padding = max(pressure_range * 0.05, 1)  # 5% padding or minimum 1 hPa
+            
+            self.axes[1, 0].set_ylim(min_pressure - padding, max_pressure + padding)
             
             pressure_range_indoor = f"Indoor: {indoor_df['pressure'].min():.1f}hPa to {indoor_df['pressure'].max():.1f}hPa"
             self.logger.debug(f"Pressure range - {pressure_range_indoor}")

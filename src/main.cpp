@@ -118,7 +118,19 @@ void scanI2CDevices();
 void setup() {
     // Initialize serial communication
     Serial.begin(SERIAL_BAUD);
-    delay(1000);
+    delay(2000);  // Increased delay for stability
+    
+    // Check reset cause for ESP8266
+    #ifdef ESP8266
+    String resetReason = ESP.getResetReason();
+    Serial.printf("Reset reason: %s\n", resetReason.c_str());
+    
+    // If we had a crash, add extra delay
+    if (resetReason.indexOf("Exception") >= 0 || resetReason.indexOf("Watchdog") >= 0) {
+        Serial.println("Previous crash detected - adding safety delay");
+        delay(5000);
+    }
+    #endif
     
     #ifdef ESP32
     Serial.println("\n=== ESP32 BME280 Environmental Logger ===");
@@ -129,7 +141,7 @@ void setup() {
     #elif defined(ESP8266)
     Serial.println("\n=== ESP8266 BMP280 Environmental Logger ===");
     Serial.println("Device: ESP8266 NodeMCU v2");
-    Serial.printf("I2C Pins: SDA=%d (D1), SCL=%d (D2)\n", SDA_PIN, SCL_PIN);
+    Serial.printf("I2C Pins: SDA=%d (D6), SCL=%d (D5)\n", SDA_PIN, SCL_PIN);
     Serial.println("Sensor: BMP280 (Temp + Pressure only)");
     Serial.println("File suffix: _outside - outdoor sensor");
     #endif
@@ -308,9 +320,14 @@ bool initializeBME280() {
                     FILTER_SETTING, STANDBY_TIME);
     #endif
     
-    // Allow sensor to warm up
+    // Allow sensor to warm up with watchdog-friendly delay
     if(serialVerboseMode) Serial.printf("[L%d] Starting warmup delay (%lu ms)\n", __LINE__, WARMUP_TIME);
-    delay(WARMUP_TIME);
+    unsigned long startWarmup = millis();
+    while (millis() - startWarmup < WARMUP_TIME) {
+        yield(); // Allow ESP8266 to handle background tasks
+        ESP.wdtFeed(); // Feed the watchdog timer
+        delay(100); // Small delay to prevent busy waiting
+    }
     
     // Test reading to make sure sensor is working
     Serial.println("Testing sensor readings...");
@@ -354,6 +371,8 @@ bool connectToWiFi() {
     while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < WIFI_TIMEOUT) {
         delay(500);
         Serial.print(".");
+        yield(); // Allow background tasks
+        ESP.wdtFeed(); // Feed watchdog timer
     }
     
     if (WiFi.status() == WL_CONNECTED) {
@@ -389,6 +408,8 @@ bool syncTime() {
             delay(1000);
             retries++;
             Serial.print(".");
+            yield(); // Allow background tasks
+            ESP.wdtFeed(); // Feed watchdog timer
             if(serialVerboseMode && retries % 5 == 0) Serial.printf(" [retry %d]", retries);
         }
         
@@ -566,8 +587,17 @@ void collectSensorReadings() {
             if(serialVerboseMode) Serial.printf("[L%d] Invalid reading detected (T:%.1f, P:%.1f, H:%.1f)\n", __LINE__, temperature, pressure, humidity);
         }
         
-        if(serialVerboseMode) Serial.printf("[L%d] Delaying %d ms before next reading\n", __LINE__, READING_INTERVAL);
-        delay(READING_INTERVAL);
+        // Use yield-friendly delay to prevent watchdog reset
+        if (i < READINGS_PER_CYCLE - 1) { // Don't delay after the last reading
+            if(serialVerboseMode) Serial.printf("[L%d] Starting yield-friendly delay (%d ms)\n", __LINE__, READING_INTERVAL);
+            unsigned long startDelay = millis();
+            while (millis() - startDelay < READING_INTERVAL) {
+                yield(); // Allow ESP8266 to handle background tasks and prevent watchdog reset
+                ESP.wdtFeed(); // Explicitly feed the watchdog timer
+                delay(100); // Small delay to prevent busy waiting
+            }
+            if(serialVerboseMode) Serial.printf("[L%d] Delay completed\n", __LINE__);
+        }
     }
     
     Serial.printf("Collected %d valid readings out of %d attempts\n", sampleCount, READINGS_PER_CYCLE);
@@ -600,10 +630,17 @@ void goToSleep() {
     uint32_t sleep_time_seconds = SLEEP_TIME_US / 1000000;
     if(serialVerboseMode) Serial.printf("[L%d] Configuring wake timer (%d seconds)\n", __LINE__, sleep_time_seconds);
     
+    // Important: Ensure GPIO16 (D0) is connected to RST for auto-wake
+    Serial.println("IMPORTANT: Ensure GPIO16 (D0) is connected to RST pin for auto-wake!");
     Serial.println("Entering deep sleep now");
     if(serialVerboseMode) Serial.printf("[L%d] About to enter deep sleep\n", __LINE__);
+    
+    // Force serial flush and small delay before sleep
     Serial.flush();
-    ESP.deepSleep(SLEEP_TIME_US);
+    delay(100);
+    
+    // Use WAKE_RF_DEFAULT to maintain WiFi calibration
+    ESP.deepSleep(SLEEP_TIME_US, WAKE_RF_DEFAULT);
     #endif
 }
 
@@ -637,8 +674,8 @@ void scanI2CDevices() {
         Serial.println("1. Check wiring:");
         Serial.println("   BMP280 VCC -> 3.3V (NOT 5V!)");
         Serial.println("   BMP280 GND -> GND");
-        Serial.printf("   BMP280 SDA -> D1 (GPIO%d)\n", SDA_PIN);
-        Serial.printf("   BMP280 SCL -> D2 (GPIO%d)\n", SCL_PIN);
+        Serial.printf("   BMP280 SDA -> D6 (GPIO%d)\n", SDA_PIN);
+        Serial.printf("   BMP280 SCL -> D5 (GPIO%d)\n", SCL_PIN);
         Serial.println("2. Ensure sensor has power (LED should be on if present)");
         Serial.println("3. Check if you have BME280 instead of BMP280");
         Serial.println("4. Try different I2C pins if wiring is correct");
