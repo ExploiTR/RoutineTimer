@@ -1,13 +1,24 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
+#ifdef USE_BME280
 #include <Adafruit_BME280.h>
-#include <WiFi.h>
+#else
+#include <Adafruit_BMP280.h>
+#endif
 #include <time.h>
 #include <math.h>
+
+// Platform-specific includes
+#ifdef ESP32
+#include <WiFi.h>
 #include <esp_bt.h>
 #include <esp_wifi.h>
 #include <esp_sleep.h>
+#elif defined(ESP8266)
+#include <ESP8266WiFi.h>
+#endif
+
 #include "FTPClient.h"
 
 // =============================================================================
@@ -23,7 +34,7 @@
 #endif
 const uint32_t I2C_CLOCK = 100000;    // 100kHz I2C clock
 
-// BME280 I2C Addresses
+// BME280 I2C Addresses (also used for BMP280)
 const uint8_t BME280_ADDR_PRIMARY = 0x76;
 const uint8_t BME280_ADDR_SECONDARY = 0x77;
 
@@ -53,19 +64,31 @@ const char* FTP_USER = "admin";
 const char* FTP_PASSWORD = "f6a3067773";
 const char* FTP_BASE_PATH = "/G/USD_TPL/";
 
-// BME280 Sensor Configuration
+// Sensor Configuration
+#ifdef USE_BME280
 const Adafruit_BME280::sensor_mode SENSOR_MODE = Adafruit_BME280::MODE_NORMAL;
 const Adafruit_BME280::sensor_sampling TEMP_OVERSAMPLING = Adafruit_BME280::SAMPLING_X2;
 const Adafruit_BME280::sensor_sampling PRESSURE_OVERSAMPLING = Adafruit_BME280::SAMPLING_X16;
 const Adafruit_BME280::sensor_sampling HUMIDITY_OVERSAMPLING = Adafruit_BME280::SAMPLING_X1;
 const Adafruit_BME280::sensor_filter FILTER_SETTING = Adafruit_BME280::FILTER_X16;
 const Adafruit_BME280::standby_duration STANDBY_TIME = Adafruit_BME280::STANDBY_MS_500;
+#else
+const Adafruit_BMP280::sensor_mode SENSOR_MODE = Adafruit_BMP280::MODE_NORMAL;
+const Adafruit_BMP280::sensor_sampling TEMP_OVERSAMPLING = Adafruit_BMP280::SAMPLING_X2;
+const Adafruit_BMP280::sensor_sampling PRESSURE_OVERSAMPLING = Adafruit_BMP280::SAMPLING_X16;
+const Adafruit_BMP280::sensor_filter FILTER_SETTING = Adafruit_BMP280::FILTER_X16;
+const Adafruit_BMP280::standby_duration STANDBY_TIME = Adafruit_BMP280::STANDBY_MS_500;
+#endif
 
 // =============================================================================
 // GLOBAL VARIABLES
 // =============================================================================
 
+#ifdef USE_BME280
 Adafruit_BME280 bme;
+#else
+Adafruit_BMP280 bmp;
+#endif
 FTPClient ftpClient;
 
 // Data collection variables
@@ -90,13 +113,27 @@ bool uploadDataToFTP(float avgTemp, float avgPressure, float avgHumidity);
 void collectSensorReadings();
 void optimizePowerConsumption();
 void goToSleep();
+void scanI2CDevices();
 
 void setup() {
     // Initialize serial communication
     Serial.begin(SERIAL_BAUD);
     delay(1000);
     
-    Serial.println("\n=== BME280 Environmental Logger ===");
+    #ifdef ESP32
+    Serial.println("\n=== ESP32 BME280 Environmental Logger ===");
+    Serial.println("Device: ESP32 WROOM-32");
+    Serial.printf("I2C Pins: SDA=%d, SCL=%d\n", SDA_PIN, SCL_PIN);
+    Serial.println("Sensor: BME280 (Temp + Pressure + Humidity)");
+    Serial.println("File suffix: (none) - indoor sensor");
+    #elif defined(ESP8266)
+    Serial.println("\n=== ESP8266 BMP280 Environmental Logger ===");
+    Serial.println("Device: ESP8266 NodeMCU v2");
+    Serial.printf("I2C Pins: SDA=%d (D1), SCL=%d (D2)\n", SDA_PIN, SCL_PIN);
+    Serial.println("Sensor: BMP280 (Temp + Pressure only)");
+    Serial.println("File suffix: _outside - outdoor sensor");
+    #endif
+    
     Serial.println("Wake up from sleep - starting data collection cycle");
     if(serialVerboseMode) Serial.printf("[L%d] setup() started\n", __LINE__);
     
@@ -107,7 +144,9 @@ void setup() {
     // Initialize BME280 sensor
     if(serialVerboseMode) Serial.printf("[L%d] Calling initializeBME280()\n", __LINE__);
     if (!initializeBME280()) {
-        Serial.println("Failed to initialize BME280. Going to sleep...");
+        Serial.println("Failed to initialize BME280. Running I2C scan for debugging...");
+        scanI2CDevices();
+        Serial.println("Going to sleep...");
         if(serialVerboseMode) Serial.printf("[L%d] BME280 init failed, calling goToSleep()\n", __LINE__);
         goToSleep();
         return;
@@ -141,11 +180,18 @@ void setup() {
     if(serialVerboseMode) Serial.printf("[L%d] Calculating averages from %d samples\n", __LINE__, sampleCount);
     float avgTemp = tempSum / sampleCount;
     float avgPressure = pressureSum / sampleCount;
-    float avgHumidity = humiditySum / sampleCount;
     
+    #ifdef USE_BME280
+    float avgHumidity = humiditySum / sampleCount;
     Serial.printf("Data collected: %d samples\n", sampleCount);
     Serial.printf("Averages - Temp: %.1f°C, Pressure: %.1fhPa, Humidity: %.2f%%\n", 
                  avgTemp, avgPressure, avgHumidity);
+    #else
+    float avgHumidity = 0.0; // BMP280 doesn't have humidity
+    Serial.printf("Data collected: %d samples\n", sampleCount);
+    Serial.printf("Averages - Temp: %.1f°C, Pressure: %.1fhPa (BMP280 - no humidity)\n", 
+                 avgTemp, avgPressure);
+    #endif
     
     // Upload data to FTP
     if(serialVerboseMode) Serial.printf("[L%d] Calling uploadDataToFTP()\n", __LINE__);
@@ -163,7 +209,11 @@ void setup() {
     if(serialVerboseMode) Serial.printf("[L%d] Disconnecting WiFi and powering down\n", __LINE__);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
+    
+    #ifdef ESP32
     esp_wifi_stop();
+    #endif
+    
     Serial.println("WiFi disconnected and powered down");
     
     // Go to sleep
@@ -185,43 +235,108 @@ void loop() {
 
 bool initializeBME280() {
     if(serialVerboseMode) Serial.printf("[L%d] initializeBME280() started\n", __LINE__);
+    
+    #ifdef USE_BME280
     Serial.println("Initializing BME280 sensor...");
+    #else
+    Serial.println("Initializing BMP280 sensor...");
+    #endif
     
     // Initialize I2C with custom pins
     if(serialVerboseMode) Serial.printf("[L%d] Initializing I2C (SDA:%d, SCL:%d, Clock:%d)\n", __LINE__, SDA_PIN, SCL_PIN, I2C_CLOCK);
     Wire.begin(SDA_PIN, SCL_PIN);
     Wire.setClock(I2C_CLOCK);
     
-    // Try to initialize BME280 with primary address
-    if(serialVerboseMode) Serial.printf("[L%d] Attempting BME280 init at primary address 0x%02X\n", __LINE__, BME280_ADDR_PRIMARY);
-    if (!bme.begin(BME280_ADDR_PRIMARY, &Wire)) {
-        Serial.printf("Could not find BME280 sensor at 0x%02X, trying 0x%02X...\n", 
-                     BME280_ADDR_PRIMARY, BME280_ADDR_SECONDARY);
+    // Give the sensor extra time to stabilize
+    delay(500);
+    Serial.println("Allowing sensor to stabilize...");
+    
+    // Try to initialize sensor with multiple attempts
+    const int maxAttempts = 3;
+    bool sensorFound = false;
+    
+    for (int attempt = 1; attempt <= maxAttempts && !sensorFound; attempt++) {
+        if(serialVerboseMode) Serial.printf("[L%d] Attempt %d/%d: Trying sensor init at primary address 0x%02X\n", __LINE__, attempt, maxAttempts, BME280_ADDR_PRIMARY);
+        
+        #ifdef USE_BME280
+        sensorFound = bme.begin(BME280_ADDR_PRIMARY, &Wire);
+        #else
+        sensorFound = bmp.begin(BME280_ADDR_PRIMARY);
+        #endif
+        
+        if (sensorFound) {
+            Serial.printf("Sensor found at address 0x%02X on attempt %d!\n", BME280_ADDR_PRIMARY, attempt);
+            if(serialVerboseMode) Serial.printf("[L%d] Sensor found at primary address\n", __LINE__);
+            break;
+        }
         
         // Try alternative address
-        if(serialVerboseMode) Serial.printf("[L%d] Attempting BME280 init at secondary address 0x%02X\n", __LINE__, BME280_ADDR_SECONDARY);
-        if (!bme.begin(BME280_ADDR_SECONDARY, &Wire)) {
-            Serial.printf("Could not find BME280 sensor at 0x%02X either!\n", BME280_ADDR_SECONDARY);
-            if(serialVerboseMode) Serial.printf("[L%d] BME280 init failed at both addresses, returning false\n", __LINE__);
-            return false;
-        } else {
-            Serial.printf("BME280 found at address 0x%02X!\n", BME280_ADDR_SECONDARY);
-            if(serialVerboseMode) Serial.printf("[L%d] BME280 found at secondary address\n", __LINE__);
+        if(serialVerboseMode) Serial.printf("[L%d] Attempt %d/%d: Trying sensor init at secondary address 0x%02X\n", __LINE__, attempt, maxAttempts, BME280_ADDR_SECONDARY);
+        
+        #ifdef USE_BME280
+        sensorFound = bme.begin(BME280_ADDR_SECONDARY, &Wire);
+        #else
+        sensorFound = bmp.begin(BME280_ADDR_SECONDARY);
+        #endif
+        
+        if (sensorFound) {
+            Serial.printf("Sensor found at address 0x%02X on attempt %d!\n", BME280_ADDR_SECONDARY, attempt);
+            if(serialVerboseMode) Serial.printf("[L%d] Sensor found at secondary address\n", __LINE__);
+            break;
         }
-    } else {
-        Serial.printf("BME280 found at address 0x%02X!\n", BME280_ADDR_PRIMARY);
-        if(serialVerboseMode) Serial.printf("[L%d] BME280 found at primary address\n", __LINE__);
+        
+        if (attempt < maxAttempts) {
+            Serial.printf("Attempt %d failed, retrying in 1 second...\n", attempt);
+            delay(1000);
+        }
     }
     
-    // Configure BME280 settings
-    if(serialVerboseMode) Serial.printf("[L%d] Configuring BME280 settings\n", __LINE__);
+    if (!sensorFound) {
+        Serial.printf("Could not initialize sensor after %d attempts!\n", maxAttempts);
+        if(serialVerboseMode) Serial.printf("[L%d] Sensor init failed after all attempts, returning false\n", __LINE__);
+        return false;
+    }
+    
+    // Configure sensor settings
+    if(serialVerboseMode) Serial.printf("[L%d] Configuring sensor settings\n", __LINE__);
+    
+    #ifdef USE_BME280
     bme.setSampling(SENSOR_MODE, TEMP_OVERSAMPLING, PRESSURE_OVERSAMPLING, 
                     HUMIDITY_OVERSAMPLING, FILTER_SETTING, STANDBY_TIME);
+    #else
+    bmp.setSampling(SENSOR_MODE, TEMP_OVERSAMPLING, PRESSURE_OVERSAMPLING, 
+                    FILTER_SETTING, STANDBY_TIME);
+    #endif
     
     // Allow sensor to warm up
-    if(serialVerboseMode) Serial.printf("[L%d] Starting warmup delay (%d ms)\n", __LINE__, WARMUP_TIME);
+    if(serialVerboseMode) Serial.printf("[L%d] Starting warmup delay (%lu ms)\n", __LINE__, WARMUP_TIME);
     delay(WARMUP_TIME);
+    
+    // Test reading to make sure sensor is working
+    Serial.println("Testing sensor readings...");
+    
+    #ifdef USE_BME280
+    float testTemp = bme.readTemperature();
+    float testPressure = bme.readPressure() / 100.0F;
+    #else
+    float testTemp = bmp.readTemperature();
+    float testPressure = bmp.readPressure() / 100.0F;
+    #endif
+    
+    if (isnan(testTemp) || isnan(testPressure)) {
+        Serial.println("Sensor readings are invalid - sensor may not be working properly!");
+        if(serialVerboseMode) Serial.printf("[L%d] Test readings failed, returning false\n", __LINE__);
+        return false;
+    }
+    
+    Serial.printf("Test readings: %.1f°C, %.1fhPa\n", testTemp, testPressure);
+    
+    #ifdef USE_BME280
     Serial.println("BME280 initialized successfully!");
+    #else
+    Serial.println("BMP280 initialized successfully!");
+    #endif
+    
     if(serialVerboseMode) Serial.printf("[L%d] initializeBME280() returning true\n", __LINE__);
     return true;
 }
@@ -319,7 +434,12 @@ String getCurrentTimeString() {
 
 String getCSVFilename() {
     if(serialVerboseMode) Serial.printf("[L%d] getCSVFilename() called\n", __LINE__);
-    String filename = getCurrentDateString() + ".csv";
+    
+    #ifndef FILENAME_SUFFIX
+    #define FILENAME_SUFFIX ""
+    #endif
+    
+    String filename = getCurrentDateString() + FILENAME_SUFFIX + ".csv";
     if(serialVerboseMode) Serial.printf("[L%d] Generated filename: %s\n", __LINE__, filename.c_str());
     return filename;
 }
@@ -339,13 +459,19 @@ void optimizePowerConsumption() {
     if(serialVerboseMode) Serial.printf("[L%d] optimizePowerConsumption() started\n", __LINE__);
     Serial.println("Optimizing power consumption...");
     
-    // Disable Bluetooth
+    #ifdef ESP32
+    // Disable Bluetooth (ESP32 only)
     if(serialVerboseMode) Serial.printf("[L%d] Disabling Bluetooth\n", __LINE__);
     esp_bt_controller_disable();
     
     // WiFi will be enabled only when needed
     if(serialVerboseMode) Serial.printf("[L%d] Stopping WiFi\n", __LINE__);
     esp_wifi_stop();
+    #elif defined(ESP8266)
+    // ESP8266 doesn't have Bluetooth, just ensure WiFi is off
+    if(serialVerboseMode) Serial.printf("[L%d] Stopping WiFi (ESP8266)\n", __LINE__);
+    WiFi.mode(WIFI_OFF);
+    #endif
     
     Serial.println("Power optimization complete");
     if(serialVerboseMode) Serial.printf("[L%d] optimizePowerConsumption() completed\n", __LINE__);
@@ -362,9 +488,18 @@ bool uploadDataToFTP(float avgTemp, float avgPressure, float avgHumidity) {
     if(serialVerboseMode) Serial.printf("[L%d] Getting filename and preparing CSV data\n", __LINE__);
     String filename = getCSVFilename();
     String currentTime = getCurrentTimeString();
+    
+    #ifdef USE_BME280
+    // BME280: Include humidity
     String csvData = currentTime + "," + String(sampleCount) + "," + 
                     String(avgTemp, 1) + "," + String(avgPressure, 1) + "," + 
                     String(avgHumidity, 2) + "\r\n";
+    #else
+    // BMP280: No humidity, use N/A or 0
+    String csvData = currentTime + "," + String(sampleCount) + "," + 
+                    String(avgTemp, 1) + "," + String(avgPressure, 1) + "," + 
+                    "N/A\r\n";
+    #endif
     
     if(serialVerboseMode) {
         Serial.printf("[L%d] Filename: %s\n", __LINE__, filename.c_str());
@@ -390,18 +525,41 @@ void collectSensorReadings() {
     
     for (int i = 0; i < READINGS_PER_CYCLE; i++) {
         if(serialVerboseMode) Serial.printf("[L%d] Reading sensor data (iteration %d)\n", __LINE__, i+1);
+        
+        #ifdef USE_BME280
         float temperature = bme.readTemperature();
         float pressure = bme.readPressure() / 100.0F; // Convert Pa to hPa
         float humidity = bme.readHumidity();
+        #else
+        float temperature = bmp.readTemperature();
+        float pressure = bmp.readPressure() / 100.0F; // Convert Pa to hPa
+        float humidity = 0.0; // BMP280 doesn't have humidity sensor
+        #endif
         
         // Check if readings are valid
-        if (!isnan(temperature) && !isnan(pressure) && !isnan(humidity)) {
+        bool tempValid = !isnan(temperature);
+        bool pressureValid = !isnan(pressure);
+        
+        #ifdef USE_BME280
+        bool humidityValid = !isnan(humidity);
+        #else
+        bool humidityValid = true; // BMP280 - humidity not applicable
+        #endif
+        
+        if (tempValid && pressureValid && humidityValid) {
             tempSum += temperature;
             pressureSum += pressure;
+            
+            #ifdef USE_BME280
             humiditySum += humidity;
-            sampleCount++;
             Serial.printf("Reading %d: %.1f°C, %.1fhPa, %.1f%%\n", 
                          i+1, temperature, pressure, humidity);
+            #else
+            Serial.printf("Reading %d: %.1f°C, %.1fhPa (BMP280 - no humidity)\n", 
+                         i+1, temperature, pressure);
+            #endif
+            
+            sampleCount++;
             if(serialVerboseMode) Serial.printf("[L%d] Valid reading added to sums\n", __LINE__);
         } else {
             Serial.printf("Reading %d: Invalid data\n", i+1);
@@ -424,6 +582,8 @@ void goToSleep() {
     if(serialVerboseMode) Serial.printf("[L%d] Ensuring WiFi is fully disabled\n", __LINE__);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
+    
+    #ifdef ESP32
     esp_wifi_stop();
     
     // Configure wake up timer
@@ -434,4 +594,56 @@ void goToSleep() {
     if(serialVerboseMode) Serial.printf("[L%d] About to enter deep sleep\n", __LINE__);
     Serial.flush();
     esp_deep_sleep_start();
+    
+    #elif defined(ESP8266)
+    // Configure wake up timer (ESP8266 uses different function)
+    uint32_t sleep_time_seconds = SLEEP_TIME_US / 1000000;
+    if(serialVerboseMode) Serial.printf("[L%d] Configuring wake timer (%d seconds)\n", __LINE__, sleep_time_seconds);
+    
+    Serial.println("Entering deep sleep now");
+    if(serialVerboseMode) Serial.printf("[L%d] About to enter deep sleep\n", __LINE__);
+    Serial.flush();
+    ESP.deepSleep(SLEEP_TIME_US);
+    #endif
+}
+
+void scanI2CDevices() {
+    Serial.println("\n=== I2C Device Scanner ===");
+    Serial.printf("Scanning I2C bus (SDA:%d, SCL:%d)...\n", SDA_PIN, SCL_PIN);
+    
+    byte error, address;
+    int nDevices = 0;
+    
+    for(address = 1; address < 127; address++) {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
+        
+        if (error == 0) {
+            Serial.printf("I2C device found at address 0x%02X", address);
+            if (address == 0x76 || address == 0x77) {
+                Serial.print(" <- This could be BME280/BMP280!");
+            }
+            Serial.println();
+            nDevices++;
+        }
+        else if (error == 4) {
+            Serial.printf("Unknown error at address 0x%02X\n", address);
+        }
+    }
+    
+    if (nDevices == 0) {
+        Serial.println("No I2C devices found!");
+        Serial.println("\nTroubleshooting tips:");
+        Serial.println("1. Check wiring:");
+        Serial.println("   BMP280 VCC -> 3.3V (NOT 5V!)");
+        Serial.println("   BMP280 GND -> GND");
+        Serial.printf("   BMP280 SDA -> D1 (GPIO%d)\n", SDA_PIN);
+        Serial.printf("   BMP280 SCL -> D2 (GPIO%d)\n", SCL_PIN);
+        Serial.println("2. Ensure sensor has power (LED should be on if present)");
+        Serial.println("3. Check if you have BME280 instead of BMP280");
+        Serial.println("4. Try different I2C pins if wiring is correct");
+    } else {
+        Serial.printf("Found %d I2C device(s)\n", nDevices);
+    }
+    Serial.println("========================\n");
 }

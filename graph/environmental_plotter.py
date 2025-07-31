@@ -166,8 +166,8 @@ class FTPDataManager:
                     filename = parts[-1]
                     self.logger.debug(f"Found CSV file: {filename}")
                     
-                    # Look for date pattern DD_MM_YYYY.csv
-                    if re.match(r'\d{2}_\d{2}_\d{4}\.csv', filename):
+                    # Look for date pattern DD_MM_YYYY.csv or DD_MM_YYYY_outside.csv
+                    if re.match(r'\d{2}_\d{2}_\d{4}\.csv', filename) or re.match(r'\d{2}_\d{2}_\d{4}_outside\.csv', filename):
                         csv_files.append(filename)
                         self.logger.debug(f"CSV file matches date pattern: {filename}")
                     else:
@@ -239,7 +239,7 @@ class FTPDownloadThread(QThread):
     
     progress_updated = pyqtSignal(int)
     status_updated = pyqtSignal(str)
-    download_complete = pyqtSignal(dict, list)
+    download_complete = pyqtSignal(dict, dict, list)
     download_error = pyqtSignal(str)
     
     def __init__(self, host, username, password, directory):
@@ -291,6 +291,7 @@ class FTPDownloadThread(QThread):
             
             # Download all files
             data_cache = {}
+            outdoor_data_cache = {}
             available_dates = []
             
             for i, filename in enumerate(csv_files):
@@ -305,14 +306,29 @@ class FTPDownloadThread(QThread):
                 if content:
                     self.logger.debug(f"Successfully downloaded {filename}, processing date")
                     
-                    # Parse date from filename (DD_MM_YYYY.csv)
-                    date_match = re.match(r'(\d{2})_(\d{2})_(\d{4})\.csv', filename)
+                    # Check if it's an outdoor file
+                    is_outdoor = filename.endswith('_outside.csv')
+                    
+                    # Parse date from filename
+                    if is_outdoor:
+                        date_match = re.match(r'(\d{2})_(\d{2})_(\d{4})_outside\.csv', filename)
+                    else:
+                        date_match = re.match(r'(\d{2})_(\d{2})_(\d{4})\.csv', filename)
+                    
                     if date_match:
                         day, month, year = date_match.groups()
                         date_str = f"{day}/{month}/{year}"
-                        data_cache[date_str] = content
-                        available_dates.append(date_str)
-                        self.logger.debug(f"File {filename} mapped to date: {date_str}")
+                        
+                        if is_outdoor:
+                            outdoor_data_cache[date_str] = content
+                            self.logger.debug(f"Outdoor file {filename} mapped to date: {date_str}")
+                        else:
+                            data_cache[date_str] = content
+                            self.logger.debug(f"Indoor file {filename} mapped to date: {date_str}")
+                        
+                        # Add to available dates if not already present
+                        if date_str not in available_dates:
+                            available_dates.append(date_str)
                     else:
                         self.logger.warning(f"File {filename} does not match expected date pattern")
                 else:
@@ -330,7 +346,7 @@ class FTPDownloadThread(QThread):
             self.logger.info(f"Download process completed successfully: {len(available_dates)} files")
             self.progress_updated.emit(100)
             self.status_updated.emit(f"Successfully downloaded {len(available_dates)} files")
-            self.download_complete.emit(data_cache, available_dates)
+            self.download_complete.emit(data_cache, outdoor_data_cache, available_dates)
             
         except Exception as e:
             error_msg = f"Error during download: {str(e)}"
@@ -447,16 +463,21 @@ class MatplotlibCanvas(FigureCanvas):
             
             if ax == self.axes[0, 0]:  # Temperature plot
                 display_y = closest_point['temperature']
-                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nTemp: {display_y:.1f}°C"
+                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nIndoor Temp: {display_y:.1f}°C"
             elif ax == self.axes[0, 1]:  # Humidity plot
                 display_y = closest_point['humidity']
                 annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nHumidity: {display_y:.1f}%RH"
             elif ax == self.axes[1, 0]:  # Pressure plot
                 display_y = closest_point['pressure']
-                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nPressure: {display_y:.1f}hPa"
-            elif ax == self.axes[1, 1]:  # Sample size plot
-                display_y = closest_point['sample_size']
-                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nSample Size: {display_y}"
+                annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nIndoor Pressure: {display_y:.1f}hPa"
+            elif ax == self.axes[1, 1]:  # Feels like temperature plot
+                if 'feels_like' in closest_point:
+                    display_y = closest_point['feels_like']
+                    actual_temp = closest_point['temperature']
+                    annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nFeels Like: {display_y:.1f}°C\nActual: {actual_temp:.1f}°C"
+                else:
+                    display_y = closest_point['temperature']
+                    annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nTemp: {display_y:.1f}°C"
             
             if annotation_text:
                 # Create annotation at the data point
@@ -476,13 +497,45 @@ class MatplotlibCanvas(FigureCanvas):
         except Exception as e:
             self.logger.debug(f"Error in hover handler: {e}")
     
-    def create_time_series_plots(self, df: pd.DataFrame):
+    def calculate_heat_index(self, temp_c: float, humidity: float) -> float:
+        """Calculate heat index (feels like temperature) from temperature and humidity"""
+        try:
+            # Convert Celsius to Fahrenheit
+            temp_f = (temp_c * 9/5) + 32
+            
+            # Heat index is only meaningful for temps > 80°F (26.7°C)
+            if temp_f < 80.0:
+                return temp_c  # Return actual temperature in Celsius
+            
+            T = temp_f
+            R = humidity
+            
+            # Basic Heat Index calculation (Rothfusz equation)
+            HI = (-42.379 + 2.04901523*T + 10.14333127*R - 0.22475541*T*R
+                  - 6.83783e-3*T*T - 5.481717e-2*R*R + 1.22874e-3*T*T*R
+                  + 8.5282e-4*T*R*R - 1.99e-6*T*T*R*R)
+            
+            # Adjustments for extreme conditions
+            if R < 13 and T >= 80 and T <= 112:
+                HI = HI - ((13-R)/4) * (((17-abs(T-95))/17)**0.5)
+            elif R > 85 and T >= 80 and T <= 87:
+                HI = HI + ((R-85)/10) * ((87-T)/5)
+            
+            # Convert back to Celsius
+            return (HI - 32) * 5/9
+            
+        except Exception as e:
+            self.logger.warning(f"Error calculating heat index: {e}")
+            return temp_c  # Return original temperature on error
+    
+    def create_time_series_plots(self, indoor_df: pd.DataFrame, outdoor_df: pd.DataFrame = None):
         """Create time series plots"""
-        self.logger.info(f"Creating time series plots for {len(df)} data points")
-        self.logger.debug(f"Data range: {df['datetime'].min()} to {df['datetime'].max()}")
+        self.logger.info(f"Creating time series plots for {len(indoor_df)} indoor data points")
+        if outdoor_df is not None and not outdoor_df.empty:
+            self.logger.info(f"Also plotting {len(outdoor_df)} outdoor data points")
         
-        # Store DataFrame for hover functionality
-        self.current_df = df.copy()
+        # Store DataFrame for hover functionality (using indoor data as primary)
+        self.current_df = indoor_df.copy()
         
         try:
             # Clear previous plots
@@ -491,46 +544,78 @@ class MatplotlibCanvas(FigureCanvas):
                 ax.clear()
                 ax.set_visible(True)
             
-            # Plot 1: Temperature
+            # Plot 1: Temperature (Indoor and Outdoor)
             self.logger.debug("Creating temperature plot")
-            self.axes[0, 0].plot(df['datetime'], df['temperature'], 'r-', linewidth=1, label='Temperature')
+            self.axes[0, 0].plot(indoor_df['datetime'], indoor_df['temperature'], 'r-', linewidth=1.5, label='Indoor Temperature')
+            if outdoor_df is not None and not outdoor_df.empty:
+                self.axes[0, 0].plot(outdoor_df['datetime'], outdoor_df['temperature'], 'orange', linewidth=1.5, label='Outdoor Temperature')
+            
             self.axes[0, 0].set_title('Temperature Over Time')
             self.axes[0, 0].set_ylabel('Temperature (°C)')
             self.axes[0, 0].grid(True, alpha=0.3)
             self.axes[0, 0].tick_params(axis='x', rotation=45)
-            temp_range = f"{df['temperature'].min():.1f}°C to {df['temperature'].max():.1f}°C"
-            self.logger.debug(f"Temperature range: {temp_range}")
+            self.axes[0, 0].legend()
             
-            # Plot 2: Humidity
+            temp_range_indoor = f"Indoor: {indoor_df['temperature'].min():.1f}°C to {indoor_df['temperature'].max():.1f}°C"
+            self.logger.debug(f"Temperature range - {temp_range_indoor}")
+            if outdoor_df is not None and not outdoor_df.empty:
+                temp_range_outdoor = f"Outdoor: {outdoor_df['temperature'].min():.1f}°C to {outdoor_df['temperature'].max():.1f}°C"
+                self.logger.debug(f"Temperature range - {temp_range_outdoor}")
+            
+            # Plot 2: Humidity (Indoor only - outdoor sensor doesn't have humidity)
             self.logger.debug("Creating humidity plot")
-            self.axes[0, 1].plot(df['datetime'], df['humidity'], 'b-', linewidth=1, label='Humidity')
+            self.axes[0, 1].plot(indoor_df['datetime'], indoor_df['humidity'], 'b-', linewidth=1.5, label='Indoor Humidity')
             self.axes[0, 1].set_title('Humidity Over Time')
             self.axes[0, 1].set_ylabel('Humidity (%RH)')
             self.axes[0, 1].grid(True, alpha=0.3)
             self.axes[0, 1].tick_params(axis='x', rotation=45)
-            humidity_range = f"{df['humidity'].min():.1f}% to {df['humidity'].max():.1f}%"
+            self.axes[0, 1].legend()
+            humidity_range = f"{indoor_df['humidity'].min():.1f}% to {indoor_df['humidity'].max():.1f}%"
             self.logger.debug(f"Humidity range: {humidity_range}")
             
-            # Plot 3: Pressure
+            # Plot 3: Pressure (Indoor and Outdoor)
             self.logger.debug("Creating pressure plot")
-            self.axes[1, 0].plot(df['datetime'], df['pressure'], 'g-', linewidth=1, label='Pressure')
+            self.axes[1, 0].plot(indoor_df['datetime'], indoor_df['pressure'], 'g-', linewidth=1.5, label='Indoor Pressure')
+            if outdoor_df is not None and not outdoor_df.empty:
+                self.axes[1, 0].plot(outdoor_df['datetime'], outdoor_df['pressure'], 'purple', linewidth=1.5, label='Outdoor Pressure')
+            
             self.axes[1, 0].set_title('Atmospheric Pressure Over Time')
             self.axes[1, 0].set_ylabel('Pressure (hPa)')
             self.axes[1, 0].grid(True, alpha=0.3)
             self.axes[1, 0].tick_params(axis='x', rotation=45)
-            pressure_range = f"{df['pressure'].min():.1f}hPa to {df['pressure'].max():.1f}hPa"
-            self.logger.debug(f"Pressure range: {pressure_range}")
+            self.axes[1, 0].legend()
             
-            # Plot 4: Sample Size
-            self.logger.debug("Creating sample size plot")
-            self.axes[1, 1].plot(df['datetime'], df['sample_size'], 'orange', linewidth=1, marker='o', markersize=2, label='Sample Size')
-            self.axes[1, 1].set_title('Sample Size Over Time')
-            self.axes[1, 1].set_ylabel('Sample Size')
+            pressure_range_indoor = f"Indoor: {indoor_df['pressure'].min():.1f}hPa to {indoor_df['pressure'].max():.1f}hPa"
+            self.logger.debug(f"Pressure range - {pressure_range_indoor}")
+            if outdoor_df is not None and not outdoor_df.empty:
+                pressure_range_outdoor = f"Outdoor: {outdoor_df['pressure'].min():.1f}hPa to {outdoor_df['pressure'].max():.1f}hPa"
+                self.logger.debug(f"Pressure range - {pressure_range_outdoor}")
+            
+            # Plot 4: Feels Like Temperature (Heat Index)
+            self.logger.debug("Creating feels like temperature plot")
+            # Calculate feels like temperature for indoor data
+            feels_like_temp = []
+            for _, row in indoor_df.iterrows():
+                feels_like = self.calculate_heat_index(row['temperature'], row['humidity'])
+                feels_like_temp.append(feels_like)
+            
+            indoor_df_copy = indoor_df.copy()
+            indoor_df_copy['feels_like'] = feels_like_temp
+            
+            self.axes[1, 1].plot(indoor_df_copy['datetime'], indoor_df_copy['feels_like'], 'darkred', linewidth=1.5, marker='o', markersize=1, label='Feels Like')
+            self.axes[1, 1].plot(indoor_df_copy['datetime'], indoor_df_copy['temperature'], 'lightcoral', linewidth=1, alpha=0.7, label='Actual Temp')
+            self.axes[1, 1].set_title('Feels Like Temperature Over Time')
+            self.axes[1, 1].set_ylabel('Temperature (°C)')
             self.axes[1, 1].set_xlabel('Date/Time')
             self.axes[1, 1].grid(True, alpha=0.3)
             self.axes[1, 1].tick_params(axis='x', rotation=45)
-            sample_range = f"{df['sample_size'].min()} to {df['sample_size'].max()}"
-            self.logger.debug(f"Sample size range: {sample_range}")
+            self.axes[1, 1].legend()
+            
+            feels_like_range = f"{min(feels_like_temp):.1f}°C to {max(feels_like_temp):.1f}°C"
+            self.logger.debug(f"Feels like temperature range: {feels_like_range}")
+            
+            # Update stored data for hover functionality to include feels like temp
+            self.current_df['feels_like'] = feels_like_temp
             
             # Format x-axis
             self.logger.debug("Formatting x-axis for all plots")
@@ -560,7 +645,8 @@ class EnvironmentalDataPlotter(QMainWindow):
         self.setWindowTitle("Environmental Data Plotter")
         self.setGeometry(100, 100, 1200, 800)
         
-        self.data_cache = {}  # Cache downloaded data
+        self.data_cache = {}  # Cache downloaded indoor data
+        self.outdoor_data_cache = {}  # Cache downloaded outdoor data
         self.available_dates = []
         
         self.logger.debug("Setting up user interface")
@@ -760,21 +846,26 @@ class EnvironmentalDataPlotter(QMainWindow):
             self.connect_btn.setEnabled(True)
             QMessageBox.critical(self, "Error", f"Failed to start download: {str(e)}")
     
-    def on_download_complete(self, data_cache, available_dates):
+    def on_download_complete(self, data_cache, outdoor_data_cache, available_dates):
         """Handle successful download completion"""
         self.logger.info(f"Download completed successfully - {len(available_dates)} files downloaded")
         self.logger.debug(f"Available dates: {available_dates}")
         
         try:
             self.data_cache = data_cache
+            self.outdoor_data_cache = outdoor_data_cache
             self.available_dates = available_dates
             
             self.logger.debug("Updating date selection dropdowns")
             self.update_date_selection()
             self.connect_btn.setEnabled(True)
             
+            indoor_count = len(data_cache)
+            outdoor_count = len(outdoor_data_cache)
+            total_files = indoor_count + outdoor_count
+            
             self.logger.info("Download process completed and UI updated")
-            QMessageBox.information(self, "Success", f"Downloaded {len(available_dates)} data files")
+            QMessageBox.information(self, "Success", f"Downloaded {total_files} data files ({indoor_count} indoor, {outdoor_count} outdoor)")
             
         except Exception as e:
             self.logger.error(f"Error handling download completion: {e}")
@@ -922,8 +1013,9 @@ class EnvironmentalDataPlotter(QMainWindow):
             self.status_bar.showMessage("Processing data and generating plots...")
             self.logger.debug("Collecting data for selected date range")
             
-            # Collect data for selected range
-            all_data = []
+            # Collect indoor data for selected range
+            indoor_data = []
+            outdoor_data = []
             dates_to_process = []
             
             # Find all dates in range
@@ -934,37 +1026,62 @@ class EnvironmentalDataPlotter(QMainWindow):
                     dates_to_process.append(date_str)
                 current_dt += timedelta(days=1)
             
-            self.logger.debug(f"Found {len(dates_to_process)} dates with data in selected range")
+            self.logger.debug(f"Found {len(dates_to_process)} dates with indoor data in selected range")
             
-            # Parse data for each date
+            # Parse indoor data for each date
             for date_str in dates_to_process:
-                self.logger.debug(f"Processing data for {date_str}")
+                self.logger.debug(f"Processing indoor data for {date_str}")
                 content = self.data_cache[date_str]
                 df = self.parse_csv_content(content)
                 if not df.empty:
-                    all_data.append(df)
-                    self.logger.debug(f"Added {len(df)} records from {date_str}")
+                    indoor_data.append(df)
+                    self.logger.debug(f"Added {len(df)} indoor records from {date_str}")
                 else:
-                    self.logger.warning(f"No valid data found for {date_str}")
+                    self.logger.warning(f"No valid indoor data found for {date_str}")
             
-            if not all_data:
-                self.logger.warning("No data found in selected date range")
-                QMessageBox.warning(self, "No Data", "No data available for the selected date range")
+            # Parse outdoor data for each date (if available)
+            for date_str in dates_to_process:
+                if date_str in self.outdoor_data_cache:
+                    self.logger.debug(f"Processing outdoor data for {date_str}")
+                    content = self.outdoor_data_cache[date_str]
+                    df = self.parse_csv_content(content)
+                    if not df.empty:
+                        outdoor_data.append(df)
+                        self.logger.debug(f"Added {len(df)} outdoor records from {date_str}")
+                    else:
+                        self.logger.warning(f"No valid outdoor data found for {date_str}")
+                else:
+                    self.logger.debug(f"No outdoor data available for {date_str}")
+            
+            if not indoor_data:
+                self.logger.warning("No indoor data found in selected date range")
+                QMessageBox.warning(self, "No Data", "No indoor data available for the selected date range")
                 self.status_bar.showMessage("Ready")
                 return
             
-            # Combine all data
-            combined_df = pd.concat(all_data, ignore_index=True)
-            combined_df = combined_df.sort_values('datetime')
+            # Combine indoor data
+            combined_indoor_df = pd.concat(indoor_data, ignore_index=True)
+            combined_indoor_df = combined_indoor_df.sort_values('datetime')
             
-            self.logger.info(f"Combined data: {len(combined_df)} total records")
-            self.logger.debug(f"Data time range: {combined_df['datetime'].min()} to {combined_df['datetime'].max()}")
+            # Combine outdoor data if available
+            combined_outdoor_df = None
+            if outdoor_data:
+                combined_outdoor_df = pd.concat(outdoor_data, ignore_index=True)
+                combined_outdoor_df = combined_outdoor_df.sort_values('datetime')
+                self.logger.info(f"Combined outdoor data: {len(combined_outdoor_df)} total records")
+            
+            self.logger.info(f"Combined indoor data: {len(combined_indoor_df)} total records")
+            self.logger.debug(f"Indoor data time range: {combined_indoor_df['datetime'].min()} to {combined_indoor_df['datetime'].max()}")
             
             # Create plots
             self.logger.debug("Creating time series plots")
-            self.canvas.create_time_series_plots(combined_df)
+            self.canvas.create_time_series_plots(combined_indoor_df, combined_outdoor_df)
             
-            self.status_bar.showMessage(f"Plot generated successfully - {len(combined_df)} data points")
+            plot_info = f"Plot generated successfully - {len(combined_indoor_df)} indoor data points"
+            if combined_outdoor_df is not None:
+                plot_info += f", {len(combined_outdoor_df)} outdoor data points"
+            
+            self.status_bar.showMessage(plot_info)
             self.logger.info("Plot generation completed successfully")
             
         except Exception as e:
@@ -973,33 +1090,6 @@ class EnvironmentalDataPlotter(QMainWindow):
             self.logger.debug(f"Full traceback: {traceback.format_exc()}")
             QMessageBox.critical(self, "Plot Error", error_msg)
             self.status_bar.showMessage("Plot generation failed")
-            current_date = start_dt
-            
-            while current_date <= end_dt:
-                date_str = current_date.strftime("%d/%m/%Y")
-                if date_str in self.data_cache:
-                    df = self.parse_csv_content(self.data_cache[date_str])
-                    if not df.empty:
-                        all_data.append(df)
-                current_date += timedelta(days=1)
-            
-            if not all_data:
-                QMessageBox.warning(self, "No Data", "No data available for selected date range")
-                return
-            
-            # Combine all data
-            combined_df = pd.concat(all_data, ignore_index=True)
-            combined_df = combined_df.sort_values('datetime')
-            
-            self.logger.info(f"Combined data: {len(combined_df)} total records")
-            self.logger.debug(f"Data time range: {combined_df['datetime'].min()} to {combined_df['datetime'].max()}")
-            
-            # Create plots
-            self.logger.debug("Creating time series plots")
-            self.canvas.create_time_series_plots(combined_df)
-            
-            self.status_bar.showMessage(f"Plot generated successfully - {len(combined_df)} data points")
-            self.logger.info("Plot generation completed successfully")
     
     def export_data(self):
         """Export selected data to CSV file"""
@@ -1032,51 +1122,9 @@ class EnvironmentalDataPlotter(QMainWindow):
             start_dt = datetime.strptime(start_date, "%d/%m/%Y")
             end_dt = datetime.strptime(end_date, "%d/%m/%Y")
             
-            # Collect and combine data
-            all_data = []
-            dates_to_process = []
-            
-            current_dt = start_dt
-            while current_dt <= end_dt:
-                date_str = current_dt.strftime("%d/%m/%Y")
-                if date_str in self.data_cache:
-                    dates_to_process.append(date_str)
-                current_dt += timedelta(days=1)
-            
-            self.logger.debug(f"Processing {len(dates_to_process)} dates for export")
-            
-            for date_str in dates_to_process:
-                content = self.data_cache[date_str]
-                df = self.parse_csv_content(content)
-                if not df.empty:
-                    all_data.append(df)
-            
-            if not all_data:
-                self.logger.warning("No data found for export in selected range")
-                QMessageBox.warning(self, "No Data", "No data available for the selected date range")
-                return
-            
-            combined_df = pd.concat(all_data, ignore_index=True)
-            combined_df = combined_df.sort_values('datetime')
-            
-            # Save to CSV
-            combined_df.to_csv(filename, index=False)
-            
-            self.logger.info(f"Successfully exported {len(combined_df)} records to {filename}")
-            QMessageBox.information(self, "Export Complete", f"Data exported successfully to {filename}")
-            
-        except Exception as e:
-            error_msg = f"Error exporting data: {str(e)}"
-            self.logger.error(error_msg)
-            self.logger.debug(f"Full traceback: {traceback.format_exc()}")
-            QMessageBox.critical(self, "Export Error", error_msg)
-        
-        try:
-            # Collect and combine data
-            start_dt = datetime.strptime(start_date, "%d/%m/%Y")
-            end_dt = datetime.strptime(end_date, "%d/%m/%Y")
-            
-            all_data = []
+            # Collect and combine indoor data
+            indoor_data = []
+            outdoor_data = []
             current_date = start_dt
             
             while current_date <= end_dt:
@@ -1084,25 +1132,62 @@ class EnvironmentalDataPlotter(QMainWindow):
                 if date_str in self.data_cache:
                     df = self.parse_csv_content(self.data_cache[date_str])
                     if not df.empty:
-                        all_data.append(df)
+                        indoor_data.append(df)
+                
+                # Check for outdoor data
+                if date_str in self.outdoor_data_cache:
+                    df_outdoor = self.parse_csv_content(self.outdoor_data_cache[date_str])
+                    if not df_outdoor.empty:
+                        outdoor_data.append(df_outdoor)
+                
                 current_date += timedelta(days=1)
             
-            if not all_data:
-                QMessageBox.warning(self, "No Data", "No data available for selected date range")
+            if not indoor_data:
+                QMessageBox.warning(self, "No Data", "No indoor data available for selected date range")
                 return
             
-            # Combine and save
-            combined_df = pd.concat(all_data, ignore_index=True)
-            combined_df = combined_df.sort_values('datetime')
+            # Combine indoor data
+            combined_indoor_df = pd.concat(indoor_data, ignore_index=True)
+            combined_indoor_df = combined_indoor_df.sort_values('datetime')
+            
+            # Add feels like temperature to indoor data
+            feels_like_temp = []
+            canvas = MatplotlibCanvas()  # Create temporary instance for calculation
+            for _, row in combined_indoor_df.iterrows():
+                feels_like = canvas.calculate_heat_index(row['temperature'], row['humidity'])
+                feels_like_temp.append(feels_like)
+            combined_indoor_df['feels_like'] = feels_like_temp
             
             # Format datetime for export
-            combined_df['Date/Time'] = combined_df['datetime'].dt.strftime('%d/%m/%Y %H:%M')
-            export_df = combined_df[['Date/Time', 'sample_size', 'temperature', 'pressure', 'humidity']]
-            export_df.columns = ['Date/Time', 'Sample Size', 'Temperature (°C)', 'Pressure (hPa)', 'Humidity (%RH)']
+            combined_indoor_df['Date/Time'] = combined_indoor_df['datetime'].dt.strftime('%d/%m/%Y %H:%M')
+            
+            # Prepare export dataframe
+            export_columns = ['Date/Time', 'sample_size', 'temperature', 'pressure', 'humidity', 'feels_like']
+            export_df = combined_indoor_df[export_columns].copy()
+            export_df.columns = ['Date/Time', 'Sample Size', 'Indoor Temperature (°C)', 'Indoor Pressure (hPa)', 'Humidity (%RH)', 'Feels Like (°C)']
+            
+            # Add outdoor data if available
+            if outdoor_data:
+                combined_outdoor_df = pd.concat(outdoor_data, ignore_index=True)
+                combined_outdoor_df = combined_outdoor_df.sort_values('datetime')
+                combined_outdoor_df['Date/Time'] = combined_outdoor_df['datetime'].dt.strftime('%d/%m/%Y %H:%M')
+                
+                # Merge outdoor temperature and pressure data
+                outdoor_export = combined_outdoor_df[['Date/Time', 'temperature', 'pressure']]
+                outdoor_export.columns = ['Date/Time', 'Outdoor Temperature (°C)', 'Outdoor Pressure (hPa)']
+                
+                # Merge with indoor data on Date/Time
+                export_df = pd.merge(export_df, outdoor_export, on='Date/Time', how='left')
             
             export_df.to_csv(filename, index=False)
             
-            QMessageBox.information(self, "Export Success", f"Data exported successfully to {filename}")
+            export_info = f"Data exported successfully to {filename}"
+            if outdoor_data:
+                export_info += f" (includes {len(indoor_data)} indoor and {len(outdoor_data)} outdoor data files)"
+            else:
+                export_info += f" (includes {len(indoor_data)} indoor data files)"
+            
+            QMessageBox.information(self, "Export Success", export_info)
             self.status_bar.showMessage(f"Data exported to {os.path.basename(filename)}")
             
         except Exception as e:
