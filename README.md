@@ -203,32 +203,17 @@ build_flags =
     -DFILENAME_SUFFIX=\"_outside\"
 ```
 
-## Design Choice: Router-Based FTP Storage
+## Design Choice: FTP vs Dedicated Server
 
-This project uses FTP storage via router USB ports instead of dedicated servers or cloud services. This design choice offers several practical advantages:
+This project uses FTP for data storage instead of a dedicated server setup. The reason is simple and practical: many modern routers support USB storage, allowing you to plug in a USB stick and instantly have FTP server functionality. This approach offers several advantages:
 
-### Why Router FTP?
-- **Zero Additional Cost**: Most modern routers support USB storage with built-in FTP
-- **24/7 Availability**: Router-based storage is always online with your network
-- **Local Data Control**: All environmental data stays within your local network
-- **Minimal Power Consumption**: USB storage adds negligible power draw
-- **Simple Setup**: No server installation or cloud subscriptions required
-- **High Reliability**: Consumer routers are designed for continuous operation
+- **Cost-effective**: No need for a separate server or cloud service
+- **Always available**: Router-based storage is always on with your network
+- **Simple setup**: Most routers have built-in FTP server functionality
+- **Local control**: All data stays within your local network
+- **Minimal power consumption**: USB stick consumes negligible power
 
-### Implementation Benefits
-- **Automatic Failover**: Router handles USB device mounting and FTP service
-- **Network Integration**: FTP server shares router's network configuration
-- **Multiple Device Support**: Both ESP32 and ESP8266 can upload to same storage
-- **Data Persistence**: USB storage survives power outages and router reboots
-
-### Recommended Setup
-1. Use high-quality USB 3.0 flash drive (SSD for heavy usage)
-2. Format storage as FAT32 or ext4 (router dependent)
-3. Enable FTP service in router admin panel
-4. Create dedicated user account for sensor uploads
-5. Set appropriate directory permissions for data folder
-
-This approach transforms any unused USB stick into a reliable IoT data repository without additional infrastructure costs.
+In this implementation, a leftover USB stick plugged into the router provides reliable, 24/7 data storage without additional hardware costs or complexity.
 
 ## Data Format & Storage
 
