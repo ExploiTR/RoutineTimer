@@ -203,32 +203,17 @@ build_flags =
     -DFILENAME_SUFFIX=\"_outside\"
 ```
 
-## Design Choice: Router-Based FTP Storage
+## Design Choice: FTP vs Dedicated Server
 
-This project uses FTP storage via router USB ports instead of dedicated servers or cloud services. This design choice offers several practical advantages:
+This project uses FTP for data storage instead of a dedicated server setup. The reason is simple and practical: many modern routers support USB storage, allowing you to plug in a USB stick and instantly have FTP server functionality. This approach offers several advantages:
 
-### Why Router FTP?
-- **Zero Additional Cost**: Most modern routers support USB storage with built-in FTP
-- **24/7 Availability**: Router-based storage is always online with your network
-- **Local Data Control**: All environmental data stays within your local network
-- **Minimal Power Consumption**: USB storage adds negligible power draw
-- **Simple Setup**: No server installation or cloud subscriptions required
-- **High Reliability**: Consumer routers are designed for continuous operation
+- **Cost-effective**: No need for a separate server or cloud service
+- **Always available**: Router-based storage is always on with your network
+- **Simple setup**: Most routers have built-in FTP server functionality
+- **Local control**: All data stays within your local network
+- **Minimal power consumption**: USB stick consumes negligible power
 
-### Implementation Benefits
-- **Automatic Failover**: Router handles USB device mounting and FTP service
-- **Network Integration**: FTP server shares router's network configuration
-- **Multiple Device Support**: Both ESP32 and ESP8266 can upload to same storage
-- **Data Persistence**: USB storage survives power outages and router reboots
-
-### Recommended Setup
-1. Use high-quality USB 3.0 flash drive (SSD for heavy usage)
-2. Format storage as FAT32 or ext4 (router dependent)
-3. Enable FTP service in router admin panel
-4. Create dedicated user account for sensor uploads
-5. Set appropriate directory permissions for data folder
-
-This approach transforms any unused USB stick into a reliable IoT data repository without additional infrastructure costs.
+In this implementation, a leftover USB stick plugged into the router provides reliable, 24/7 data storage without additional hardware costs or complexity.
 
 ## Data Format & Storage
 
@@ -488,65 +473,3 @@ This project is open source and available under the **Apache License 2.0**. You 
 - Distribute and modify the software
 - Distribute modified versions under the same license
 - Include the software in larger works under different licenses
-
-### Contributing Guidelines
-1. **Code Standards**: Follow existing code style and documentation patterns
-2. **Multi-Platform Testing**: Test changes on both ESP32 and ESP8266 platforms  
-3. **Documentation**: Update all relevant documentation for new features
-4. **Example Configurations**: Include sample configurations for new sensors
-5. **Backward Compatibility**: Maintain compatibility with existing data formats
-
-### How to Contribute
-1. Fork the repository on GitHub
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request with detailed description
-
-## Project History & Evolution
-
-**RoutineTimer v1.0** (Original): Single ESP32 sensor for basic data collection
-**RoutineTimer v2.0** (Current): Multi-platform IoT system with professional visualization
-
-### Key Milestones:
-- **2024**: Initial ESP32 + BME280 implementation with basic FTP upload
-- **2025**: Added ESP8266 + BMP280 support for outdoor monitoring
-- **2025**: Developed professional PyQt5 visualization application
-- **2025**: Enhanced FTP client with robust error handling and retry logic
-- **2025**: Comprehensive documentation and troubleshooting guides
-
-### Technical Evolution:
-- Single-platform → Dual-platform support (ESP32/ESP8266)
-- Basic sensor reading → Advanced averaging and validation
-- Simple FTP upload → Robust passive-mode FTP client with retry logic
-- Terminal plotting → Professional GUI with interactive controls
-- Limited documentation → Comprehensive HLD/LLD documentation
-
-## Community & Support
-
-### Getting Help
-- **Documentation**: Start with README.md, HLD.md, and LLD.md
-- **Troubleshooting**: Check troubleshooting sections in documentation
-- **Issues**: Open GitHub issues for bugs and feature requests
-- **Discussions**: Use GitHub Discussions for general questions
-
-### Real-World Deployments
-This system has been successfully deployed for:
-- **Indoor Air Quality Monitoring**: Office and home environments
-- **Outdoor Weather Stations**: Garden and agricultural monitoring  
-- **HVAC System Analysis**: Building management applications
-- **Research Projects**: Environmental data collection for studies
-
-### Performance Statistics
-- **Battery Life**: 3-8 months on single charge (typical usage)
-- **Data Reliability**: >95% successful uploads with retry mechanism
-- **Storage Efficiency**: ~1MB per month of continuous 5-minute interval data
-- **Network Resilience**: Automatic recovery from temporary WiFi outages
-
-## Acknowledgments
-
-- **Adafruit**: BME280 and BMP280 sensor libraries
-- **PyQt5 Team**: Cross-platform GUI framework
-- **Matplotlib/Pandas**: Python data analysis ecosystem
-- **PlatformIO**: Arduino-compatible development platform
-- **ESP32/ESP8266 Community**: Hardware platform support and examples
