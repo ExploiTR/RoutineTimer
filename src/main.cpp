@@ -15,8 +15,12 @@
 // =============================================================================
 
 // I2C Configuration
-#define SDA_PIN 21
-#define SCL_PIN 22
+#ifndef SDA_PIN
+#define SDA_PIN 21  // Default for ESP32
+#endif
+#ifndef SCL_PIN
+#define SCL_PIN 22  // Default for ESP32
+#endif
 const uint32_t I2C_CLOCK = 100000;    // 100kHz I2C clock
 
 // BME280 I2C Addresses
