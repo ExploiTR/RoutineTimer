@@ -9,15 +9,12 @@ import logging
 import traceback
 from datetime import datetime as dt
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QGridLayout, QLabel, QLineEdit, 
+                             QGridLayout, QLabel, QLineEdit, 
                              QPushButton, QComboBox, QProgressBar, QMessageBox,
                              QFileDialog, QGroupBox, QStatusBar)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont
-import matplotlib.pyplot as plt
+from PyQt5.QtCore import QThread, pyqtSignal
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.dates import DateFormatter
 from matplotlib.ticker import ScalarFormatter
 import pandas as pd
 from datetime import datetime, timedelta
@@ -25,7 +22,7 @@ import ftplib
 import io
 import os
 import re
-from typing import List, Dict, Tuple, Optional
+from typing import List, Optional
 
 # Configure logging
 def setup_logging():
@@ -595,7 +592,8 @@ class MatplotlibCanvas(FigureCanvas):
             self.logger.debug("Creating pressure plot")
             self.axes[1, 0].plot(indoor_df['datetime'], indoor_df['pressure'], 'g-', linewidth=1.5, label='Indoor Pressure')
             if outdoor_df is not None and not outdoor_df.empty:
-                self.axes[1, 0].plot(outdoor_df['datetime'], outdoor_df['pressure'], 'purple', linewidth=1.5, label='Outdoor Pressure')
+                # Subtract 1 from outdoor pressure values for calibration
+                self.axes[1, 0].plot(outdoor_df['datetime'], outdoor_df['pressure'] - 1, 'purple', linewidth=1.5, label='Outdoor Pressure')
             
             self.axes[1, 0].set_title('Atmospheric Pressure Over Time')
             self.axes[1, 0].set_ylabel('Pressure (hPa)')
