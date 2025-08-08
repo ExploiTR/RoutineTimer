@@ -1,5 +1,5 @@
-# RoutineTimer - Environmental Monitoring System
-
+# Hello! 
+## This project uses BME280 and BMP280 with ESP32 and ESP8266 to monitor difference between indoor and outdoor air condition. 
 <img src="https://raw.githubusercontent.com/ExploiTR/RoutineTimer/refs/heads/main/screenshot.png" alt="Environmental Monitoring System" width="1000">
 
 A complete IoT environmental monitoring solution consisting of ESP32/ESP8266-based sensor nodes and a Python visualization application. This system provides long-term environmental data collection with minimal power consumption and comprehensive data analysis capabilities.
@@ -240,4 +240,5 @@ See code comments and examples in `src/main.cpp`, `platformio.ini`, and `graph/e
 ## License & Contributing
 
 This project is open source under the **Apache License 2.0**. You are free to use, modify, and distribute it (see LICENSE for details).
+
 
