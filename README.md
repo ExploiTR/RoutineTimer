@@ -43,62 +43,26 @@ graph TD
     H -.->|CSV Upload| J
 ```
 
+
 ## Multi-Platform Support
 
-### ESP32 Configuration (Indoor Sensor)
-- **Board**: Denky32 or compatible ESP32
-- **Sensor**: BME280 (Temperature, Humidity, Pressure)
-- **I2C Pins**: SDA=21, SCL=22
-- **File Naming**: `DD_MM_YYYY.csv` (no suffix)
-- **Power**: USB or battery with deep sleep optimization
+See Hardware Requirements below for board, sensor, and wiring details for ESP32 (indoor) and ESP8266 (outdoor) configurations. File naming conventions and power notes are also summarized there.
 
-### ESP8266 Configuration (Outdoor Sensor)
-- **Board**: NodeMCU v2 or compatible ESP8266
-- **Sensor**: BMP280 (Temperature, Pressure only)
-- **I2C Pins**: SDA=5 (D1), SCL=4 (D2)
-- **File Naming**: `DD_MM_YYYY_outside.csv` (outdoor suffix)
-- **Power**: Battery optimized for outdoor deployment
 
 ## Hardware Requirements
 
-### ESP32 Indoor Setup
-- ESP32 development board (Denky32 or WROOM-32 compatible)
-- BME280 environmental sensor breakout
-- I2C connections: SDA → GPIO21, SCL → GPIO22
-- 3.3V power supply (USB or battery pack)
+- ESP32 (Denky32/WROOM-32) + BME280 (SDA=21, SCL=22, 3.3V)
+- ESP8266 (NodeMCU v2) + BMP280 (SDA=D1/GPIO5, SCL=D2/GPIO4, 3.3V)
+- Battery or USB power (see Power Consumption section)
+- WiFi network, router with USB/FTP, USB storage device
 
-### ESP8266 Outdoor Setup  
-- ESP8266 NodeMCU v2 development board
-- BMP280 sensor breakout (weather-resistant housing recommended)
-- I2C connections: SDA → D1 (GPIO5), SCL → D2 (GPIO4)
-- Battery pack with weather protection
-
-### Network Infrastructure
-- WiFi network with internet access for NTP synchronization
-- Router with USB port and FTP server capability
-- USB storage device (flash drive recommended for reliability)
 
 ## Software Requirements
 
-### Firmware Development
-- **PlatformIO IDE** (recommended) or Arduino IDE
-- ESP32/ESP8266 Arduino framework
-- Platform-specific libraries:
-  - **ESP32**: Adafruit BME280 Library, Adafruit Unified Sensor
-  - **ESP8266**: Adafruit BMP280 Library, Adafruit Unified Sensor
-
-### Data Visualization Application
-- **Python 3.7+** with pip package manager
-- **Auto-installed dependencies**:
-  - `matplotlib>=3.7.0` - Plotting and visualization
-  - `pandas>=2.0.0` - Data manipulation and analysis
-  - `PyQt5>=5.15.0` - GUI framework
-  - `python-dateutil>=2.8.0` - Date/time parsing
-
-### Network Infrastructure
-- Router with built-in FTP server (most modern routers)
-- USB storage device connected to router
-- Stable WiFi network with internet connectivity
+- PlatformIO IDE (or Arduino IDE) for firmware
+- ESP32/ESP8266 Arduino framework, Adafruit BME280/BMP280 libraries
+- Python 3.7+ with pip, see `graph/requirements.txt` for dependencies
+- Router with FTP server and USB storage
 
 ## Quick Start
 
@@ -124,16 +88,7 @@ SCL  → D2 (GPIO4)
 #   - "wroom32" for ESP32 + BME280
 #   - "nodemcuv2" for ESP8266 + BMP280
 
-# Edit WiFi credentials in src/main.cpp:
-const char* WIFI_SSID = "Your_WiFi_Network";
-const char* WIFI_PASSWORD = "Your_Password";
-
-# Edit FTP settings in src/main.cpp:
-const char* FTP_SERVER = "192.168.1.1";        # Your router IP
-const char* FTP_USER = "admin";                 # FTP username  
-const char* FTP_PASSWORD = "your_password";     # FTP password
-const char* FTP_BASE_PATH = "/USB_Storage/";    # USB mount path
-
+# Edit WiFi and FTP credentials in src/main.cpp as shown in the Configuration section below.
 # Build and upload firmware
 pio run --target upload
 ```
@@ -160,33 +115,15 @@ python environmental_plotter.py
 
 ## Configuration
 
-### WiFi Settings (src/main.cpp)
-```cpp
-const char* WIFI_SSID = "Your_WiFi_Network";
-const char* WIFI_PASSWORD = "Your_Password";
-const unsigned long WIFI_TIMEOUT = 10000;       // 10 second timeout
-```
+### Configuration Reference (src/main.cpp)
+All key configuration parameters (WiFi, FTP, sensor timing, NTP) are defined at the top of `src/main.cpp`. Please refer to that file for the latest settings and update as needed. Example parameters include:
 
-### FTP Settings (src/main.cpp)
-```cpp
-const char* FTP_SERVER = "192.168.1.1";         // Router IP address
-const int FTP_PORT = 21;                         // Standard FTP port
-const char* FTP_USER = "admin";                  // FTP username
-const char* FTP_PASSWORD = "your_password";      // FTP password  
-const char* FTP_BASE_PATH = "/USB_Storage/";     // Storage path on router
-```
+- WiFi credentials: `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_TIMEOUT`
+- FTP server: `FTP_SERVER`, `FTP_PORT`, `FTP_USER`, `FTP_PASSWORD`, `FTP_BASE_PATH`
+- Sensor timing: `SLEEP_TIME_US`, `READINGS_PER_CYCLE`, `READING_INTERVAL`
+- NTP: `NTP_SERVER`, `GMT_OFFSET_SEC`
 
-### Sensor Configuration (src/main.cpp)
-```cpp
-// Data collection timing
-const uint64_t SLEEP_TIME_US = 5 * 60 * 1000000ULL;  // 5 minutes between cycles
-const int READINGS_PER_CYCLE = 5;                     // Readings per wake cycle
-const unsigned long READING_INTERVAL = 3000;          // 3 seconds between readings
-
-// NTP time synchronization
-const char* NTP_SERVER = "time.google.com";
-const long GMT_OFFSET_SEC = 5.5 * 3600;               // IST UTC+5:30 (adjust for your timezone)
-```
+See comments in `src/main.cpp` for details and adjust values for your deployment.
 
 ### PlatformIO Build Targets
 ```ini
@@ -270,206 +207,36 @@ USB_Storage/
 - Optimized FTP upload with connection reuse
 - Hardware-level deep sleep implementation
 
+
 ## Project Structure
 
-```
-RoutineTimer/
-├── README.md                     # Project documentation (this file)
-├── HLD.md                       # High-Level Design document  
-├── LLD.md                       # Low-Level Design document
-├── LICENSE                      # Project license
-├── platformio.ini              # PlatformIO configuration (dual-platform)
-├── run_plotter.bat            # Windows launcher for visualization app
-├── screenshot.png             # Application screenshot
-│
-├── src/                       # ESP32/ESP8266 firmware source
-│   ├── main.cpp               # Main application logic
-│   ├── FTPClient.h           # FTP client class header
-│   └── FTPClient.cpp         # FTP client implementation
-│
-├── graph/                     # Python visualization application
-│   ├── environmental_plotter.py  # Main PyQt5 application
-│   ├── requirements.txt       # Python dependencies
-│   ├── README.md             # Plotter-specific documentation
-│   └── __pycache__/          # Python compiled cache
-│
-├── include/                   # Additional header files (if needed)
-├── lib/                      # Project-specific libraries
-└── test/                     # Unit tests and test utilities
-```
+See the repository tree for a full breakdown. Main components:
+- `src/` (firmware), `graph/` (visualization app), `platformio.ini` (build config), documentation, and test/lib/include folders.
+
 
 ## Key Features
 
-### Firmware Capabilities
-- **Dual Platform Support**: Single codebase for ESP32 (BME280) and ESP8266 (BMP280)
-- **Robust Sensor Initialization**: Multiple I2C address attempts with fallback handling
-- **Intelligent WiFi Management**: Connection timeout with automatic retry logic
-- **Precise Time Synchronization**: NTP-based timestamping with timezone support
-- **Advanced FTP Client**: Custom implementation with passive mode and retry mechanisms
-- **Comprehensive Error Handling**: Graceful degradation with detailed serial logging
-- **Power Optimization**: Hardware-level sleep management and peripheral control
+- Dual platform firmware (ESP32/ESP8266) with robust sensor, WiFi, and FTP handling
+- Power-optimized, reliable data collection and upload
+- PyQt5 visualization app: interactive plots, export, multi-threaded FTP, and error handling
 
-### Visualization Application
-- **Professional GUI**: PyQt5-based interface with intuitive controls
-- **Multi-threaded Operations**: Background FTP downloads without GUI blocking
-- **Interactive Date Selection**: Calendar-based date range picker
-- **Multi-metric Plotting**: Temperature, humidity, pressure, and sample size graphs
-- **Data Export Functionality**: CSV export for external analysis
-- **Comprehensive Logging**: Detailed console output for troubleshooting
-- **Progress Tracking**: Real-time feedback during data operations
-- **Error Recovery**: Robust exception handling with user-friendly messages
 
 ## Troubleshooting
 
-### Firmware Issues
+See comments in `src/main.cpp` and serial/console output for detailed troubleshooting. Common issues:
+- Sensor not detected: check I2C wiring, addresses, and power (3.3V only)
+- WiFi/FTP: verify credentials, router/server status, and network connectivity
+- Python/visualization: ensure Python 3.7+, install dependencies, check CSV format
 
-#### Sensor Detection Problems
-```bash
-# Check I2C connections and addresses
-# ESP32: SDA=21, SCL=22  |  ESP8266: SDA=5, SCL=4
-# Monitor serial output for I2C scan results
-# Verify 3.3V power supply (NOT 5V)
-# Try different I2C addresses (0x76, 0x77)
-```
-
-#### WiFi Connection Failures
-```bash
-# Verify SSID and password in main.cpp
-# Check WiFi signal strength at sensor location
-# Ensure 2.4GHz network (ESP8266 doesn't support 5GHz)
-# Monitor serial output for connection attempts
-# Test manual connection from computer at same location
-```
-
-#### FTP Upload Errors
-```bash
-# Verify router FTP server is enabled
-# Test FTP credentials using desktop FTP client
-# Check router USB storage mount status
-# Ensure FTP_BASE_PATH exists on router storage
-# Monitor serial output for detailed FTP error messages
-```
-
-### Visualization Application Issues
-
-#### Python Environment Problems
-```bash
-# Ensure Python 3.7+ is installed
-python --version
-
-# Recreate virtual environment if corrupted
-rmdir /s .venv
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-#### FTP Connection Issues  
-```bash
-# Test router FTP access from command line
-ftp 192.168.1.1
-# Enter username/password to verify credentials
-# Check if data directory is accessible
-
-# Verify network connectivity
-ping 192.168.1.1
-```
-
-#### Data Parsing Errors
-```bash
-# Check CSV file format on router storage
-# Ensure files are not corrupted during transfer
-# Verify date/time format matches expected pattern
-# Check for special characters in data files
-```
-
-### Hardware Debugging
-
-#### Power Issues
-- Measure actual battery voltage under load
-- Check for loose connections affecting power delivery
-- Verify current consumption matches expected values
-- Test with USB power supply to isolate battery issues
-
-#### Sensor Accuracy
-- Compare readings with reference instruments
-- Allow adequate warm-up time after power-on
-- Check for environmental interference (heat sources, air flow)
-- Verify sensor mounting doesn't affect readings
 
 ## Development & Customization
 
-### Adding New Sensor Types
-```cpp
-// 1. Include sensor library in platformio.ini
-lib_deps = 
-    your_sensor_library
+See code comments and examples in `src/main.cpp`, `platformio.ini`, and `graph/environmental_plotter.py` for how to:
+- Add new sensor types (update libraries, initialization, CSV format)
+- Extend visualization (add columns/plots, update requirements)
+- Customize build targets and advanced features
 
-// 2. Initialize sensor in setup()
-if (!newSensor.begin()) {
-    Serial.println("New sensor initialization failed");
-    return false;
-}
-
-// 3. Add readings to collectSensorReadings()
-float newReading = newSensor.readValue();
-if (!isnan(newReading)) {
-    newSum += newReading;
-}
-
-// 4. Update CSV format in uploadDataToFTP()
-String csvData = getCurrentTimeString() + "," + 
-                String(sampleCount) + "," +
-                String(avgTemp, 1) + "," +
-                String(avgPressure, 1) + "," + 
-                String(avgHumidity, 2) + "," +
-                String(avgNewReading, 2) + "\r\n";
-```
-
-### Extending Visualization
-```python
-# 1. Update CSV parsing in environmental_plotter.py
-required_cols = ['Date', 'Sample Size', 'Temp (°C)', 
-                'Pressure (hPa)', 'Humidity (RH%)', 'New Metric']
-
-# 2. Add new plot subplot
-axes[2,0].plot(filtered_data['Date'], 
-               filtered_data['New Metric'], 'c-', linewidth=1)
-axes[2,0].set_title('New Metric (units)')
-axes[2,0].grid(True, alpha=0.3)
-
-# 3. Update requirements.txt if new libraries needed
-your_new_library>=1.0.0
-```
-
-### Platform Customization
-```ini
-# Add new platform in platformio.ini
-[env:your_board]
-platform = your_platform  
-board = your_board_type
-framework = arduino
-build_flags = 
-    -DUSE_YOUR_SENSOR=1
-    -DFILENAME_SUFFIX=\"_your_suffix\"
-    -DSDA_PIN=your_sda_pin
-    -DSCL_PIN=your_scl_pin
-lib_deps = 
-    your_sensor_library
-```
-
-### Advanced Configuration
-- **Custom Sleep Intervals**: Modify `SLEEP_TIME_US` in main.cpp
-- **Data Retention**: Implement automatic old file deletion
-- **Multiple Sensors**: Deploy multiple nodes with different suffixes
-- **Web Interface**: Replace PyQt5 with web-based dashboard
-- **Database Storage**: Replace FTP with proper database backend
-- **Cloud Integration**: Add MQTT or cloud service connectivity
 
 ## License & Contributing
 
-This project is open source and available under the **Apache License 2.0**. You are free to:
-- Use the software for any purpose, including commercial use
-- Distribute and modify the software
-- Distribute modified versions under the same license
-- Include the software in larger works under different licenses
+This project is open source under the **Apache License 2.0**. You are free to use, modify, and distribute it (see LICENSE for details).
