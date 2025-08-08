@@ -490,11 +490,12 @@ class MatplotlibCanvas(FigureCanvas):
                     annotation_text = f"Time: {display_x.strftime('%d/%m/%Y %H:%M')}\nTemp: {display_y:.1f}°C"
             
             if annotation_text:
-                # Create annotation at the data point
+                # Simple positioning that avoids clipping by using top-left offset
+                # This ensures the annotation is always visible within the plot area
                 self.hover_annotation = ax.annotate(
                     annotation_text,
                     xy=(display_x, display_y),
-                    xytext=(20, 20),
+                    xytext=(-80, 40),  # Position to upper-left of the point
                     textcoords='offset points',
                     bbox={'boxstyle': 'round,pad=0.5', 'fc': 'lightyellow', 'alpha': 0.9, 'edgecolor': 'gray'},
                     arrowprops={'arrowstyle': '->', 'connectionstyle': 'arc3,rad=0', 'color': 'gray'},
